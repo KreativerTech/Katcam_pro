@@ -20,7 +20,7 @@ os.makedirs(PHOTO_DIR, exist_ok=True)
 
 
 def take_photo():
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 8000)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 6000)
     ret, frame = cap.read()

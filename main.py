@@ -33,7 +33,7 @@ def update_photo():
     last_photo = get_last_photo()
     if last_photo and os.path.exists(last_photo):
         img = Image.open(last_photo)
-        img = img.resize((400, 300))  # Ajusta el tamaño según tu preferencia
+        img = img.resize((500, 400))  # Ajusta el tamaño según tu preferencia
         photo = ImageTk.PhotoImage(img)
         lbl_photo.config(image=photo)
         lbl_photo.image = photo  # Evita que la imagen se elimine por el recolector de basura
@@ -92,7 +92,7 @@ def mostrar_transmision():
     if streaming:
         return  # Ya está transmitiendo
     streaming = True
-    cap_stream = cv2.VideoCapture(1)
+    cap_stream = cv2.VideoCapture(0)
     lbl_status.config(text="Transmisión en directo")
     actualizar_stream()
 
