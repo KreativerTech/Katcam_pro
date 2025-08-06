@@ -29,20 +29,20 @@ def get_last_photo():
         return os.path.join(PHOTO_DIR, fotos[-1])
     return None
 
-def update_photo():
+def update_main_image():
     last_photo = get_last_photo()
     if last_photo and os.path.exists(last_photo):
         img = Image.open(last_photo)
         img = img.resize((400, 300))
         photo = ImageTk.PhotoImage(img)
-        lbl_last_photo.config(image=photo, width=400, height=300)
-        lbl_last_photo.image = photo
+        lbl_main_image.config(image=photo, width=400, height=300)
+        lbl_main_image.image = photo
 
-def update_stream_photo(img):
+def update_stream_image(img):
     img = img.resize((400, 300))
     photo = ImageTk.PhotoImage(img)
-    lbl_stream_photo.config(image=photo, width=400, height=300)
-    lbl_stream_photo.image = photo
+    lbl_main_image.config(image=photo, width=400, height=300)
+    lbl_main_image.image = photo
 
 def take_and_update():
     global streaming
@@ -51,7 +51,7 @@ def take_and_update():
         detener_transmision()
         root.update()
     take_photo()
-    update_photo()
+    update_main_image()
     if was_streaming:
         mostrar_transmision()
 
@@ -74,7 +74,7 @@ def actualizar_stream():
     if ret:
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(frame)
-        update_stream_photo(img)
+        update_stream_image(img)
     if streaming:
         root.after(30, actualizar_stream)
 
@@ -85,7 +85,7 @@ def detener_transmision():
         cap_stream.release()
         cap_stream = None
     lbl_status.config(text="Transmisión detenida")
-    lbl_stream_photo.config(image="")  # Limpia la imagen de transmisión
+    update_main_image()  # Vuelve a mostrar la última foto
 
 def start_timelapse():
     global timelapse_running, next_capture_time, interval_ms, days_selected, hour_start, hour_end
@@ -150,82 +150,66 @@ root.title("Katcam Pro")
 main_frame = tk.Frame(root)
 main_frame.pack(padx=10, pady=10)
 
-# Scroll para columna izquierda (vertical y horizontal)
-left_canvas = tk.Canvas(main_frame, width=420, height=650)
-left_scrollbar = tk.Scrollbar(main_frame, orient="vertical", command=left_canvas.yview)
-left_hscrollbar = tk.Scrollbar(main_frame, orient="horizontal", command=left_canvas.xview)
-left_frame = tk.Frame(left_canvas)
+# Columna 1: Frame para imagen/transmisión
+image_frame = tk.Frame(main_frame)
+image_frame.grid(row=0, column=0, padx=10, pady=10, sticky="n")
 
-left_frame.bind(
-    "<Configure>",
-    lambda e: left_canvas.configure(
-        scrollregion=left_canvas.bbox("all")
-    )
-)
-left_canvas.create_window((0, 0), window=left_frame, anchor="nw")
-left_canvas.configure(yscrollcommand=left_scrollbar.set, xscrollcommand=left_hscrollbar.set)
+tk.Label(image_frame, text="Imagen (Foto o Transmisión)", font=("Arial", 12, "bold")).pack(pady=5)
+lbl_main_image = tk.Label(image_frame, width=400, height=300, bg="gray")
+lbl_main_image.pack(pady=5)
 
-left_canvas.grid(row=0, column=0, sticky="nsew")
-left_scrollbar.grid(row=0, column=1, sticky="ns")
-left_hscrollbar.grid(row=1, column=0, sticky="ew")
+# Columna 2: Botones
+button_frame = tk.Frame(main_frame)
+button_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
 
-# Columna izquierda: transmisión y última foto
-tk.Label(left_frame, text="Transmisión en directo", font=("Arial", 12, "bold")).pack(pady=5)
-lbl_stream_photo = tk.Label(left_frame, width=400, height=300, bg="black")
-lbl_stream_photo.pack(pady=5)
+btn_take = tk.Button(button_frame, text="Sacar Foto", command=take_and_update, width=25, height=2)
+btn_take.pack(pady=5)
 
-btn_stream = tk.Button(left_frame, text="Iniciar transmisión", command=mostrar_transmision, width=25, height=2)
-btn_stream.pack(pady=2)
+btn_stream = tk.Button(button_frame, text="Iniciar transmisión", command=mostrar_transmision, width=25, height=2)
+btn_stream.pack(pady=5)
 
-btn_stop_stream = tk.Button(left_frame, text="Detener transmisión", command=detener_transmision, width=25, height=2)
-btn_stop_stream.pack(pady=2)
+btn_stop_stream = tk.Button(button_frame, text="Detener transmisión", command=detener_transmision, width=25, height=2)
+btn_stop_stream.pack(pady=5)
 
-tk.Label(left_frame, text="Última foto tomada", font=("Arial", 12, "bold")).pack(pady=10)
-lbl_last_photo = tk.Label(left_frame, width=400, height=300, bg="gray")
-lbl_last_photo.pack(pady=5)
+lbl_status = tk.Label(button_frame, text="")
+lbl_status.pack(pady=5)
 
-btn_take = tk.Button(left_frame, text="Sacar Foto", command=take_and_update, width=25, height=2)
-btn_take.pack(pady=10)
+# Columna 3: Configuración timelapse
+config_frame = tk.Frame(main_frame)
+config_frame.grid(row=0, column=2, padx=10, pady=10, sticky="n")
 
-# Columna derecha: configuración
-right_frame = tk.Frame(main_frame)
-right_frame.grid(row=0, column=2, padx=20, sticky="n")
+tk.Label(config_frame, text="Configuración Timelapse", font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=2, pady=5)
 
-tk.Label(right_frame, text="Configuración Timelapse", font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=2, pady=5)
-
-tk.Label(right_frame, text="Frecuencia (minutos):").grid(row=1, column=0, sticky="e")
-entry_freq = tk.Entry(right_frame)
+tk.Label(config_frame, text="Frecuencia (minutos):").grid(row=1, column=0, sticky="e")
+entry_freq = tk.Entry(config_frame)
 entry_freq.grid(row=1, column=1)
 entry_freq.insert(0, "10")
 
-tk.Label(right_frame, text="Días a funcionar:").grid(row=2, column=0, sticky="ne")
+tk.Label(config_frame, text="Días a funcionar:").grid(row=2, column=0, sticky="ne")
 dias_lista = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 day_vars = [tk.BooleanVar(value=True) for _ in dias_lista]
-days_frame = tk.Frame(right_frame)
+days_frame = tk.Frame(config_frame)
 days_frame.grid(row=2, column=1, sticky="w")
 for i, dia in enumerate(dias_lista):
     tk.Checkbutton(days_frame, text=dia.capitalize(), variable=day_vars[i]).pack(anchor="w")
 
-tk.Label(right_frame, text="Hora inicio (HH:MM):").grid(row=3, column=0, sticky="e")
-entry_hour_start = tk.Entry(right_frame)
+tk.Label(config_frame, text="Hora inicio (HH:MM):").grid(row=3, column=0, sticky="e")
+entry_hour_start = tk.Entry(config_frame)
 entry_hour_start.grid(row=3, column=1)
 entry_hour_start.insert(0, "08:00")
 
-tk.Label(right_frame, text="Hora fin (HH:MM):").grid(row=4, column=0, sticky="e")
-entry_hour_end = tk.Entry(right_frame)
+tk.Label(config_frame, text="Hora fin (HH:MM):").grid(row=4, column=0, sticky="e")
+entry_hour_end = tk.Entry(config_frame)
 entry_hour_end.grid(row=4, column=1)
 entry_hour_end.insert(0, "18:00")
 
-btn_start = tk.Button(right_frame, text="Iniciar Timelapse", command=start_timelapse, width=25, height=2)
+btn_start = tk.Button(config_frame, text="Iniciar Timelapse", command=start_timelapse, width=25, height=2)
 btn_start.grid(row=5, column=0, columnspan=2, pady=5)
 
-btn_stop = tk.Button(right_frame, text="Detener Timelapse", command=stop_timelapse, width=25, height=2)
+btn_stop = tk.Button(config_frame, text="Detener Timelapse", command=stop_timelapse, width=25, height=2)
 btn_stop.grid(row=6, column=0, columnspan=2, pady=5)
 
-lbl_status = tk.Label(right_frame, text="")
-lbl_status.grid(row=7, column=0, columnspan=2, pady=5)
-
-update_photo()
+update_main_image()
 
 # Variables globales para timelapse
 timelapse_running = False
