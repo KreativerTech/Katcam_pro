@@ -24,7 +24,7 @@ def take_photo():
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 8000)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 6000)
-    time.sleep(2)  # Esperar 2 segundos para que la cámara se ajuste a la luz
+    time.sleep(4)  # Esperar 2 segundos para que la cámara se ajuste a la luz
     ret, frame = cap.read()
     cap.release()
 
