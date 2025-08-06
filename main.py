@@ -5,6 +5,8 @@ import os
 from datetime import datetime, timedelta
 
 PHOTO_DIR = "I:/Mi unidad/KatcamAustralia/fotos"  # Usa la misma ruta que en camera.py
+streaming = False
+cap_stream = None
 
 def get_last_photo():
     fotos = sorted(os.listdir(PHOTO_DIR))
@@ -68,6 +70,42 @@ def schedule_next_capture():
     else:
         root.after(interval_ms, schedule_next_capture)
 
+def mostrar_transmision():
+    global streaming, cap_stream
+    import cv2
+    if streaming:
+        return  # Ya está transmitiendo
+    streaming = True
+    cap_stream = cv2.VideoCapture(1)
+    lbl_status.config(text="Transmisión en directo")
+    actualizar_stream()
+
+def actualizar_stream():
+    global streaming, cap_stream
+    import cv2
+    if not streaming or cap_stream is None:
+        return
+    ret, frame = cap_stream.read()
+    if ret:
+        # Convertir el frame de OpenCV (BGR) a PIL (RGB)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(frame)
+        img = img.resize((400, 300))  # Ajusta el tamaño si lo deseas
+        imgtk = ImageTk.PhotoImage(image=img)
+        lbl_photo.imgtk = imgtk
+        lbl_photo.config(image=imgtk)
+    if streaming:
+        root.after(30, actualizar_stream)  # Actualiza cada 30 ms
+
+def detener_transmision():
+    global streaming, cap_stream
+    streaming = False
+    if cap_stream is not None:
+        cap_stream.release()
+        cap_stream = None
+    lbl_status.config(text="Transmisión detenida")
+    update_photo()  # Vuelve a mostrar la última foto
+
 root = tk.Tk()
 root.title("Katcam Pro")
 
@@ -76,6 +114,12 @@ lbl_photo.pack(pady=10)
 
 btn_take = tk.Button(root, text="Sacar Foto", command=take_and_update, width=25, height=2)
 btn_take.pack(pady=10)
+
+btn_stream = tk.Button(root, text="Transmisión en directo", command=mostrar_transmision, width=25, height=2)
+btn_stream.pack(pady=5)
+
+btn_stop_stream = tk.Button(root, text="Detener transmisión", command=detener_transmision, width=25, height=2)
+btn_stop_stream.pack(pady=5)
 
 # Parámetros de timelapse
 frame_params = tk.Frame(root)
