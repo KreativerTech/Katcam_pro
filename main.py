@@ -35,13 +35,13 @@ def update_photo():
         img = Image.open(last_photo)
         img = img.resize((400, 300))
         photo = ImageTk.PhotoImage(img)
-        lbl_last_photo.config(image=photo)
+        lbl_last_photo.config(image=photo, width=400, height=300)
         lbl_last_photo.image = photo
 
 def update_stream_photo(img):
     img = img.resize((400, 300))
     photo = ImageTk.PhotoImage(img)
-    lbl_stream_photo.config(image=photo)
+    lbl_stream_photo.config(image=photo, width=400, height=300)
     lbl_stream_photo.image = photo
 
 def take_and_update():
@@ -131,7 +131,6 @@ def actualizar_stream():
     if ret:
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(frame)
-        img = img.resize((400, 300))
         update_stream_photo(img)
     if streaming:
         root.after(30, actualizar_stream)
@@ -151,10 +150,24 @@ root.title("Katcam Pro")
 main_frame = tk.Frame(root)
 main_frame.pack(padx=10, pady=10)
 
-# Columna izquierda: transmisión y última foto
-left_frame = tk.Frame(main_frame)
-left_frame.grid(row=0, column=0, sticky="n")
+# Scroll para columna izquierda
+left_canvas = tk.Canvas(main_frame, width=420, height=650)
+left_scrollbar = tk.Scrollbar(main_frame, orient="vertical", command=left_canvas.yview)
+left_frame = tk.Frame(left_canvas)
 
+left_frame.bind(
+    "<Configure>",
+    lambda e: left_canvas.configure(
+        scrollregion=left_canvas.bbox("all")
+    )
+)
+left_canvas.create_window((0, 0), window=left_frame, anchor="nw")
+left_canvas.configure(yscrollcommand=left_scrollbar.set)
+
+left_canvas.grid(row=0, column=0, sticky="ns")
+left_scrollbar.grid(row=0, column=1, sticky="ns")
+
+# Columna izquierda: transmisión y última foto
 tk.Label(left_frame, text="Transmisión en directo", font=("Arial", 12, "bold")).pack(pady=5)
 lbl_stream_photo = tk.Label(left_frame, width=400, height=300, bg="black")
 lbl_stream_photo.pack(pady=5)
@@ -174,7 +187,7 @@ btn_take.pack(pady=10)
 
 # Columna derecha: configuración
 right_frame = tk.Frame(main_frame)
-right_frame.grid(row=0, column=1, padx=20, sticky="n")
+right_frame.grid(row=0, column=2, padx=20, sticky="n")
 
 tk.Label(right_frame, text="Configuración Timelapse", font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=2, pady=5)
 
