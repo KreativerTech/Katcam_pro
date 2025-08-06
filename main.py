@@ -3,6 +3,36 @@ from camera import take_photo
 from PIL import Image, ImageTk
 import os
 from datetime import datetime, timedelta
+import json
+
+CONFIG_FILE = "katcam_config.json"
+
+def guardar_configuracion():
+    config = {
+        "frecuencia": entry_freq.get(),
+        "dias": [var.get() for var in day_vars],
+        "hora_inicio": entry_hour_start.get(),
+        "hora_fin": entry_hour_end.get(),
+        "timelapse_activo": timelapse_running
+    }
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f)
+
+def cargar_configuracion():
+    if not os.path.exists(CONFIG_FILE):
+        return
+    with open(CONFIG_FILE, "r") as f:
+        config = json.load(f)
+    entry_freq.delete(0, tk.END)
+    entry_freq.insert(0, config.get("frecuencia", "10"))
+    for i, valor in enumerate(config.get("dias", [True]*7)):
+        day_vars[i].set(valor)
+    entry_hour_start.delete(0, tk.END)
+    entry_hour_start.insert(0, config.get("hora_inicio", "08:00"))
+    entry_hour_end.delete(0, tk.END)
+    entry_hour_end.insert(0, config.get("hora_fin", "18:00"))
+    if config.get("timelapse_activo", False):
+        root.after(500, start_timelapse)  # Inicia timelapse si estaba activo
 
 def encontrar_google_drive():
     posibles_nombres = ["Mi unidad", "Google Drive"]
@@ -89,6 +119,7 @@ def detener_transmision():
 
 def start_timelapse():
     global timelapse_running, next_capture_time, interval_ms, days_selected, hour_start, hour_end
+    guardar_configuracion()  # Guarda la configuración antes de iniciar
     timelapse_running = True
     try:
         freq_str = entry_freq.get()
@@ -116,6 +147,7 @@ def start_timelapse():
 def stop_timelapse():
     global timelapse_running
     timelapse_running = False
+    guardar_configuracion()
     lbl_status.config(text="Timelapse detenido")
 
 def schedule_next_capture():
@@ -209,6 +241,7 @@ btn_start.grid(row=5, column=0, columnspan=2, pady=5)
 btn_stop = tk.Button(config_frame, text="Detener Timelapse", command=stop_timelapse, width=25, height=2)
 btn_stop.grid(row=6, column=0, columnspan=2, pady=5)
 
+cargar_configuracion()  # Carga la configuración al iniciar
 update_main_image()
 
 # Variables globales para timelapse
