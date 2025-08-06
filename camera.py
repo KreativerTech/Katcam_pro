@@ -1,6 +1,7 @@
 import cv2
 import os
 from datetime import datetime
+import time
 
 def encontrar_google_drive():
     posibles_nombres = ["Mi unidad", "Google Drive"]
@@ -23,6 +24,7 @@ def take_photo():
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 8000)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 6000)
+    time.sleep(2)  # Esperar 2 segundos para que la cámara se ajuste a la luz
     ret, frame = cap.read()
     cap.release()
 
