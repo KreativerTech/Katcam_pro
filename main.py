@@ -55,6 +55,38 @@ def take_and_update():
     if was_streaming:
         mostrar_transmision()
 
+def mostrar_transmision():
+    global streaming, cap_stream
+    import cv2
+    if streaming:
+        return
+    streaming = True
+    cap_stream = cv2.VideoCapture(0)
+    lbl_status.config(text="Transmisión en directo")
+    actualizar_stream()
+
+def actualizar_stream():
+    global streaming, cap_stream
+    import cv2
+    if not streaming or cap_stream is None:
+        return
+    ret, frame = cap_stream.read()
+    if ret:
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(frame)
+        update_stream_photo(img)
+    if streaming:
+        root.after(30, actualizar_stream)
+
+def detener_transmision():
+    global streaming, cap_stream
+    streaming = False
+    if cap_stream is not None:
+        cap_stream.release()
+        cap_stream = None
+    lbl_status.config(text="Transmisión detenida")
+    lbl_stream_photo.config(image="")  # Limpia la imagen de transmisión
+
 def start_timelapse():
     global timelapse_running, next_capture_time, interval_ms, days_selected, hour_start, hour_end
     timelapse_running = True
@@ -112,47 +144,16 @@ def schedule_next_capture():
         next_capture_time = now + timedelta(milliseconds=interval_ms)
     root.after(interval_ms, schedule_next_capture)
 
-def mostrar_transmision():
-    global streaming, cap_stream
-    import cv2
-    if streaming:
-        return
-    streaming = True
-    cap_stream = cv2.VideoCapture(0)
-    lbl_status.config(text="Transmisión en directo")
-    actualizar_stream()
-
-def actualizar_stream():
-    global streaming, cap_stream
-    import cv2
-    if not streaming or cap_stream is None:
-        return
-    ret, frame = cap_stream.read()
-    if ret:
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(frame)
-        update_stream_photo(img)
-    if streaming:
-        root.after(30, actualizar_stream)
-
-def detener_transmision():
-    global streaming, cap_stream
-    streaming = False
-    if cap_stream is not None:
-        cap_stream.release()
-        cap_stream = None
-    lbl_status.config(text="Transmisión detenida")
-    lbl_stream_photo.config(image="")  # Limpia la imagen de transmisión
-
 root = tk.Tk()
 root.title("Katcam Pro")
 
 main_frame = tk.Frame(root)
 main_frame.pack(padx=10, pady=10)
 
-# Scroll para columna izquierda
+# Scroll para columna izquierda (vertical y horizontal)
 left_canvas = tk.Canvas(main_frame, width=420, height=650)
 left_scrollbar = tk.Scrollbar(main_frame, orient="vertical", command=left_canvas.yview)
+left_hscrollbar = tk.Scrollbar(main_frame, orient="horizontal", command=left_canvas.xview)
 left_frame = tk.Frame(left_canvas)
 
 left_frame.bind(
@@ -162,10 +163,11 @@ left_frame.bind(
     )
 )
 left_canvas.create_window((0, 0), window=left_frame, anchor="nw")
-left_canvas.configure(yscrollcommand=left_scrollbar.set)
+left_canvas.configure(yscrollcommand=left_scrollbar.set, xscrollcommand=left_hscrollbar.set)
 
-left_canvas.grid(row=0, column=0, sticky="ns")
+left_canvas.grid(row=0, column=0, sticky="nsew")
 left_scrollbar.grid(row=0, column=1, sticky="ns")
+left_hscrollbar.grid(row=1, column=0, sticky="ew")
 
 # Columna izquierda: transmisión y última foto
 tk.Label(left_frame, text="Transmisión en directo", font=("Arial", 12, "bold")).pack(pady=5)
