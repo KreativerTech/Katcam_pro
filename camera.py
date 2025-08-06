@@ -2,8 +2,22 @@ import cv2
 import os
 from datetime import datetime
 
-PHOTO_DIR = "I:/Mi unidad/KatcamAustralia/fotos"
+def encontrar_google_drive():
+    posibles_nombres = ["Mi unidad", "Google Drive"]
+    for letra in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+        unidad = f"{letra}:\\"
+        if os.path.exists(unidad):
+            for nombre in posibles_nombres:
+                ruta = os.path.join(unidad, nombre, "KatcamAustralia", "fotos")
+                if os.path.exists(ruta):
+                    return ruta
+    return None
+
+PHOTO_DIR = encontrar_google_drive()
+if PHOTO_DIR is None:
+    raise FileNotFoundError("No se encontró la carpeta de Google Drive 'KatcamAustralia/fotos' en ninguna unidad.")
 os.makedirs(PHOTO_DIR, exist_ok=True)
+
 
 def take_photo():
     cap = cv2.VideoCapture(1)
