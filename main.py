@@ -39,6 +39,7 @@ def update_photo():
         lbl_last_photo.image = photo
 
 def update_stream_photo(img):
+    img = img.resize((400, 300))
     photo = ImageTk.PhotoImage(img)
     lbl_stream_photo.config(image=photo)
     lbl_stream_photo.image = photo
