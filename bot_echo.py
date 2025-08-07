@@ -1,31 +1,25 @@
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+import asyncio
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# Reemplaza con tu TOKEN de BotFather
-TOKEN = '8469077425:AAHqX9VHAez2eRik25l844YsQ1bfqrESff8'
+TOKEN = '8469077425:AAHqX9VHAez2eRik25l844YsQ1bfqrESff8'  # Reemplaza con tu token real de BotFather
 
-# Función para iniciar
-def start(update, context):
-    update.message.reply_text("¡Hola! Soy Katcam. Envíame un mensaje y te responderé.")
+# Responde al comando /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("¡Hola! Soy tu bot. Envíame un mensaje.")
 
-# Función para responder mensajes
-def echo(update, context):
-    mensaje = update.message.text
-    update.message.reply_text(f"Recibido: {mensaje}")
+# Responde a todos los mensajes de texto
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Recibido: {update.message.text}")
 
-def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    # Comando /start
-    dp.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-    # Responder todos los textos
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, echo))
-
-    # Iniciar el bot
-    updater.start_polling()
-    print("Bot iniciado. Presiona Ctrl+C para detenerlo.")
-    updater.idle()
+    print("Bot iniciado. Presiona Ctrl+C para detener.")
+    await app.run_polling()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
