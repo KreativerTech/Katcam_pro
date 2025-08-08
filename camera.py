@@ -2,6 +2,7 @@ import cv2
 import os
 from datetime import datetime
 import time
+import shutil
 
 def encontrar_google_drive():
     posibles_nombres = ["Mi unidad", "Google Drive"]
@@ -24,14 +25,28 @@ def take_photo():
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 8000)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 6000)
-    time.sleep(4)  # Esperar 2 segundos para que la cámara se ajuste a la luz
+    time.sleep(3)
+    for _ in range(3):
+        cap.read()
+        time.sleep(0.3)
     ret, frame = cap.read()
     cap.release()
 
     if ret:
-        filename = f"{PHOTO_DIR}/{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-        cv2.imwrite(filename, frame)
-        print(f"Foto guardada: {filename}")
+        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+        pendrive_path = os.path.join(PHOTO_DIR, filename)
+        cv2.imwrite(pendrive_path, frame)
+        print(f"Foto guardada en pendrive: {pendrive_path}")
+
+        # Si hay Google Drive y es diferente al pendrive, copia la foto
+        from main import DRIVE_DIR  # Importa la variable global del main
+        if DRIVE_DIR and DRIVE_DIR != PHOTO_DIR:
+            drive_path = os.path.join(DRIVE_DIR, filename)
+            try:
+                shutil.copy2(pendrive_path, drive_path)
+                print(f"Foto copiada a Google Drive: {drive_path}")
+            except Exception as e:
+                print(f"No se pudo copiar al Drive: {e}")
     else:
         print("Error al capturar imagen")
 

@@ -4,6 +4,7 @@ from PIL import Image, ImageTk
 import os
 from datetime import datetime, timedelta
 import json
+import shutil
 
 CONFIG_FILE = "katcam_config.json"
 
@@ -34,6 +35,20 @@ def cargar_configuracion():
     if config.get("timelapse_activo", False):
         root.after(500, start_timelapse)  # Inicia timelapse si estaba activo
 
+def encontrar_pendrive():
+    for letra in "DEFGHIJKLMNOPQRSTUVWXYZ":
+        unidad = f"{letra}:\\"
+        if os.path.exists(unidad):
+            # Si la raíz de la unidad tiene una carpeta FOTOS, úsala
+            if "FOTOS" in os.listdir(unidad):
+                return os.path.join(unidad, "FOTOS")
+            # O si la unidad misma se llama FOTOS (por etiqueta)
+            if os.path.basename(os.path.normpath(unidad)) == "FOTOS":
+                return unidad
+    return None
+
+
+
 def encontrar_google_drive():
     posibles_nombres = ["Mi unidad", "Google Drive"]
     for letra in "CDEFGHIJKLMNOPQRSTUVWXYZ":
@@ -45,10 +60,31 @@ def encontrar_google_drive():
                     return ruta
     return None
 
-PHOTO_DIR = encontrar_google_drive()
-if PHOTO_DIR is None:
-    raise FileNotFoundError("No se encontró la carpeta de Google Drive 'KatcamAustralia/fotos' en ninguna unidad.")
+PENDRIVE_DIR = encontrar_pendrive()
+DRIVE_DIR = encontrar_google_drive()
+
+if PENDRIVE_DIR:
+    PHOTO_DIR = PENDRIVE_DIR
+elif DRIVE_DIR:
+    PHOTO_DIR = DRIVE_DIR
+else:
+    raise FileNotFoundError("No se encontró el pendrive 'FOTOS' ni la carpeta de Google Drive 'KatcamAustralia/fotos'.")
 os.makedirs(PHOTO_DIR, exist_ok=True)
+
+def sincronizar_fotos():
+    drive_dir = encontrar_google_drive()
+    if not drive_dir:
+        lbl_status.config(text="No se encontró Google Drive para sincronizar.")
+        return
+    fotos_pendrive = sorted(os.listdir(PHOTO_DIR))
+    fotos_drive = set(os.listdir(drive_dir))
+    nuevas = [f for f in fotos_pendrive if f not in fotos_drive and f.lower().endswith(".jpg")]
+    for f in nuevas:
+        shutil.copy2(os.path.join(PHOTO_DIR, f), os.path.join(drive_dir, f))
+    if nuevas:
+        lbl_status.config(text=f"Sincronizadas {len(nuevas)} fotos al Drive.")
+    else:
+        lbl_status.config(text="No hay fotos nuevas para sincronizar.")
 
 streaming = False
 cap_stream = None
@@ -186,7 +222,7 @@ main_frame.pack(padx=10, pady=10)
 image_frame = tk.Frame(main_frame)
 image_frame.grid(row=0, column=0, padx=10, pady=10, sticky="n")
 
-tk.Label(image_frame, text="Imagen (Foto o Transmisión)", font=("Arial", 12, "bold")).pack(pady=5)
+tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 12, "bold")).pack(pady=5)
 lbl_main_image = tk.Label(image_frame, width=400, height=300, bg="gray")
 lbl_main_image.pack(pady=5)
 
@@ -251,5 +287,11 @@ interval_ms = 600000  # 10 minutos por defecto
 days_selected = dias_lista.copy()
 hour_start = "08:00"
 hour_end = "18:00"
+
+def sync_auto():
+    sincronizar_fotos()
+    root.after(60000, sync_auto)  # cada 60 segundos (60000 ms)
+
+sync_auto()
 
 root.mainloop()
