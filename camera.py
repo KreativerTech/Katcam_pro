@@ -4,6 +4,16 @@ from datetime import datetime
 import time
 import shutil
 
+def encontrar_pendrive():
+    for letra in "DEFGHIJKLMNOPQRSTUVWXYZ":
+        unidad = f"{letra}:\\"
+        if os.path.exists(unidad):
+            if "FOTOS" in os.listdir(unidad):
+                return os.path.join(unidad, "FOTOS")
+            if os.path.basename(os.path.normpath(unidad)) == "FOTOS":
+                return unidad
+    return None
+
 def encontrar_google_drive():
     posibles_nombres = ["Mi unidad", "Google Drive"]
     for letra in "CDEFGHIJKLMNOPQRSTUVWXYZ":
@@ -15,11 +25,16 @@ def encontrar_google_drive():
                     return ruta
     return None
 
-PHOTO_DIR = encontrar_google_drive()
-if PHOTO_DIR is None:
-    raise FileNotFoundError("No se encontró la carpeta de Google Drive 'KatcamAustralia/fotos' en ninguna unidad.")
-os.makedirs(PHOTO_DIR, exist_ok=True)
+PENDRIVE_DIR = encontrar_pendrive()
+DRIVE_DIR = encontrar_google_drive()
 
+if PENDRIVE_DIR:
+    PHOTO_DIR = PENDRIVE_DIR
+elif DRIVE_DIR:
+    PHOTO_DIR = DRIVE_DIR
+else:
+    raise FileNotFoundError("No se encontró el pendrive 'FOTOS' ni la carpeta de Google Drive 'KatcamAustralia/fotos'.")
+os.makedirs(PHOTO_DIR, exist_ok=True)
 
 def take_photo():
     cap = cv2.VideoCapture(0)
@@ -39,7 +54,6 @@ def take_photo():
         print(f"Foto guardada en pendrive: {pendrive_path}")
 
         # Si hay Google Drive y es diferente al pendrive, copia la foto
-        from main import DRIVE_DIR  # Importa la variable global del main
         if DRIVE_DIR and DRIVE_DIR != PHOTO_DIR:
             drive_path = os.path.join(DRIVE_DIR, filename)
             try:
