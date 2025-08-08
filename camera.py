@@ -69,12 +69,3 @@ def take_photo():
     else:
         print("Error al capturar imagen")
 
-def show_last_photo():
-    fotos = sorted(os.listdir(PHOTO_DIR))
-    if fotos:
-        img = cv2.imread(f"{PHOTO_DIR}/{fotos[-1]}")
-        cv2.imshow("Última Foto", img)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-    else:
-        print("No hay fotos disponibles")
