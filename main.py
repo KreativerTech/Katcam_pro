@@ -226,7 +226,9 @@ image_frame = tk.Frame(main_frame)
 image_frame.grid(row=0, column=0, padx=10, pady=10, sticky="n")
 
 tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 12, "bold")).pack(pady=5)
-lbl_main_image = tk.Label(image_frame, width=400, height=300, bg="gray")
+#lbl_main_image = tk.Label(image_frame, width=400, height=300, bg="gray")
+lbl_main_image = tk.Label(image_frame, bg="gray")
+img = img.resize((400, 300))
 lbl_main_image.pack(pady=5)
 
 # Columna 2: Botones
