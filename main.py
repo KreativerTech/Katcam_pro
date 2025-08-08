@@ -217,12 +217,22 @@ def schedule_next_capture():
 
 root = tk.Tk()
 root.title("Katcam Pro")
+root.iconbitmap("katcam_multi.ico")
 
-main_frame = tk.Frame(root)
+root.configure(bg="#f5f5f5")
+
+# Cargar y mostrar el logo
+logo_img = Image.open("logo_katcam.png")
+logo_img = logo_img.resize((350, 150))  # Ajusta el tamaño según prefieras
+logo_photo = ImageTk.PhotoImage(logo_img)
+logo_label = tk.Label(root, image=logo_photo, bg="#f5f5f5")
+logo_label.pack(pady=(15, 10)) 
+
+main_frame = tk.Frame(root, bg="#f5f5f5")
 main_frame.pack(padx=10, pady=10)
 
 # Columna 1: Frame para imagen/transmisión
-image_frame = tk.Frame(main_frame)
+image_frame = tk.Frame(main_frame, bg="#f5f5f5")
 image_frame.grid(row=0, column=0, padx=10, pady=10, sticky="n")
 
 tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 12, "bold")).pack(pady=5)
@@ -231,7 +241,7 @@ lbl_main_image = tk.Label(image_frame, bg="gray")
 lbl_main_image.pack(pady=5)
 
 # Columna 2: Botones
-button_frame = tk.Frame(main_frame)
+button_frame = tk.Frame(main_frame, bg="#f5f5f5")
 button_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
 
 btn_take = tk.Button(button_frame, text="Sacar Foto", command=take_and_update, width=25, height=2)
@@ -247,7 +257,7 @@ lbl_status = tk.Label(button_frame, text="")
 lbl_status.pack(pady=5)
 
 # Columna 3: Configuración timelapse
-config_frame = tk.Frame(main_frame)
+config_frame = tk.Frame(main_frame, bg="#f5f5f5")
 config_frame.grid(row=0, column=2, padx=10, pady=10, sticky="n")
 
 tk.Label(config_frame, text="Configuración Timelapse", font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=2, pady=5)
