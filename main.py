@@ -39,12 +39,15 @@ def encontrar_pendrive():
     for letra in "DEFGHIJKLMNOPQRSTUVWXYZ":
         unidad = f"{letra}:\\"
         if os.path.exists(unidad):
-            # Si la raíz de la unidad tiene una carpeta FOTOS, úsala
-            if "FOTOS" in os.listdir(unidad):
-                return os.path.join(unidad, "FOTOS")
-            # O si la unidad misma se llama FOTOS (por etiqueta)
-            if os.path.basename(os.path.normpath(unidad)) == "FOTOS":
-                return unidad
+            fotos_path = os.path.join(unidad, "FOTOS")
+            if not os.path.exists(fotos_path):
+                try:
+                    os.makedirs(fotos_path)
+                    print(f"Carpeta FOTOS creada en {unidad}")
+                except Exception as e:
+                    print(f"No se pudo crear la carpeta FOTOS en {unidad}: {e}")
+            if os.path.exists(fotos_path) and os.path.isdir(fotos_path):
+                return fotos_path
     return None
 
 
