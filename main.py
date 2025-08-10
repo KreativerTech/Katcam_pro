@@ -155,12 +155,12 @@ def update_main_image():
     last_photo = get_last_photo()
     if last_photo and os.path.exists(last_photo):
         img = Image.open(last_photo)
-        img = img.resize((600, 500))
-        photo = ImageTk.PhotoImage(img)
-        lbl_main_image.config(image=photo)
-        lbl_main_image.image = photo
     else:
-        lbl_main_image.config(image="")
+        img = Image.open("kreativerkatcam.jpg")
+    img = img.resize((600, 500))
+    photo = ImageTk.PhotoImage(img)
+    lbl_main_image.config(image=photo)
+    lbl_main_image.image = photo
 
 def update_stream_image(img):
     img = img.resize((600, 500))
