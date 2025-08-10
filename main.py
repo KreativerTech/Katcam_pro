@@ -1,4 +1,6 @@
 import tkinter as tk
+from tkinter import messagebox
+from tkinter import filedialog as fd
 from camera import take_photo
 from PIL import Image, ImageTk
 import os
@@ -7,7 +9,6 @@ import json
 import shutil
 import subprocess
 import sys
-import ttkbootstrap as tb
 
 CONFIG_FILE = "katcam_config.json"
 
@@ -18,32 +19,86 @@ BTN_COLOR = "#FFD600"
 BTN_TEXT_COLOR = "#181818"
 BTN_BORDER_COLOR = "#FFD600"
 
+# -------------------- CONFIGURACIÓN PERSISTENTE --------------------
+
 def guardar_configuracion():
     config = {
         "frecuencia": entry_freq.get(),
         "dias": [var.get() for var in day_vars],
         "hora_inicio": entry_hour_start.get(),
         "hora_fin": entry_hour_end.get(),
-        "timelapse_activo": timelapse_running
+        "timelapse_activo": timelapse_running,
+        "photo_dir": PHOTO_DIR
     }
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f)
 
 def cargar_configuracion():
     if not os.path.exists(CONFIG_FILE):
-        return
+        return None
     with open(CONFIG_FILE, "r") as f:
         config = json.load(f)
-    entry_freq.delete(0, tk.END)
+    entry_freq.delete(0, "end")
     entry_freq.insert(0, config.get("frecuencia", "10"))
     for i, valor in enumerate(config.get("dias", [True]*7)):
         day_vars[i].set(valor)
-    entry_hour_start.delete(0, tk.END)
+    entry_hour_start.delete(0, "end")
     entry_hour_start.insert(0, config.get("hora_inicio", "08:00"))
-    entry_hour_end.delete(0, tk.END)
+    entry_hour_end.delete(0, "end")
     entry_hour_end.insert(0, config.get("hora_fin", "18:00"))
     if config.get("timelapse_activo", False):
-        root.after(500, start_timelapse)  # Inicia timelapse si estaba activo
+        root.after(500, start_timelapse)
+    return config
+
+# -------------------- SELECCIÓN DE CARPETA DE FOTOS --------------------
+
+def seleccionar_directorio_manual():
+    carpeta = fd.askdirectory(title="Selecciona la carpeta para guardar fotos")
+    if carpeta:
+        return carpeta
+    return None
+
+def inicializar_directorio_fotos():
+    config = None
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            try:
+                config = json.load(f)
+            except Exception:
+                config = None
+    if config and "photo_dir" in config and os.path.exists(config["photo_dir"]):
+        return config["photo_dir"]
+
+    pendrive = encontrar_pendrive()
+    drive = encontrar_google_drive()
+    ruta = None
+
+    if pendrive:
+        ruta = pendrive
+    elif drive:
+        ruta = drive
+    else:
+        respuesta = messagebox.askyesno(
+            "Seleccionar carpeta",
+            "No se encontró el pendrive 'FOTOS' ni la carpeta de Google Drive.\n¿Deseas seleccionar una carpeta manualmente?"
+        )
+        if respuesta:
+            ruta = seleccionar_directorio_manual()
+        else:
+            messagebox.showerror("Error", "No se puede continuar sin una carpeta para guardar fotos.")
+            sys.exit(1)
+    return ruta
+
+def cambiar_directorio_fotos():
+    global PHOTO_DIR
+    nueva = seleccionar_directorio_manual()
+    if nueva:
+        PHOTO_DIR = nueva
+        guardar_configuracion()
+        messagebox.showinfo("Ruta actualizada", f"Carpeta de fotos cambiada a:\n{PHOTO_DIR}")
+        update_main_image()
+
+# -------------------- DETECCIÓN DE UNIDADES --------------------
 
 def encontrar_pendrive():
     for letra in "DEFGHIJKLMNOPQRSTUVWXYZ":
@@ -71,16 +126,7 @@ def encontrar_google_drive():
                     return ruta
     return None
 
-PENDRIVE_DIR = encontrar_pendrive()
-DRIVE_DIR = encontrar_google_drive()
-
-if PENDRIVE_DIR:
-    PHOTO_DIR = PENDRIVE_DIR
-elif DRIVE_DIR:
-    PHOTO_DIR = DRIVE_DIR
-else:
-    raise FileNotFoundError("No se encontró el pendrive 'FOTOS' ni la carpeta de Google Drive 'KatcamAustralia/fotos'.")
-os.makedirs(PHOTO_DIR, exist_ok=True)
+# -------------------- SINCRONIZACIÓN --------------------
 
 def sincronizar_fotos():
     drive_dir = encontrar_google_drive()
@@ -97,8 +143,7 @@ def sincronizar_fotos():
     else:
         lbl_status.config(text="No hay fotos nuevas para sincronizar.")
 
-streaming = False
-cap_stream = None
+# -------------------- FUNCIONES DE IMAGEN --------------------
 
 def get_last_photo():
     fotos = sorted(os.listdir(PHOTO_DIR))
@@ -114,12 +159,28 @@ def update_main_image():
         photo = ImageTk.PhotoImage(img)
         lbl_main_image.config(image=photo)
         lbl_main_image.image = photo
+    else:
+        lbl_main_image.config(image="")
 
 def update_stream_image(img):
-    img = img.resize((400, 300))
+    img = img.resize((600, 500))
     photo = ImageTk.PhotoImage(img)
     lbl_main_image.config(image=photo)
     lbl_main_image.image = photo
+
+def abrir_carpeta_fotos():
+    path = os.path.realpath(PHOTO_DIR)
+    if sys.platform == "win32":
+        os.startfile(path)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
+
+# -------------------- FUNCIONES DE CONTROL --------------------
+
+streaming = False
+cap_stream = None
 
 def take_and_update():
     global streaming
@@ -127,7 +188,7 @@ def take_and_update():
     if streaming:
         detener_transmision()
         root.update()
-    take_photo()
+    take_photo(PHOTO_DIR)  # Pasa la ruta actual
     update_main_image()
     if was_streaming:
         mostrar_transmision()
@@ -162,29 +223,26 @@ def detener_transmision():
         cap_stream.release()
         cap_stream = None
     lbl_status.config(text="Transmisión detenida")
-    update_main_image()  # Vuelve a mostrar la última foto
+    update_main_image()
+
+# -------------------- TIMELAPSE --------------------
 
 def start_timelapse():
     global timelapse_running, next_capture_time, interval_ms, days_selected, hour_start, hour_end
-    guardar_configuracion()  # Guarda la configuración antes de iniciar
+    guardar_configuracion()
     timelapse_running = True
     try:
         freq_str = entry_freq.get()
         hour_start_str = entry_hour_start.get()
         hour_end_str = entry_hour_end.get()
-
-        # Días seleccionados
         days_selected.clear()
         for i, var in enumerate(day_vars):
             if var.get():
                 days_selected.append(dias_lista[i])
-
-        # Horas seleccionadas
         hour_start = hour_start_str if hour_start_str else None
         hour_end = hour_end_str if hour_end_str else None
-
         next_capture_time = datetime.now()
-        interval_ms = int(float(freq_str) * 1000 * 60) if freq_str else 600000  # 10 minutos por defecto
+        interval_ms = int(float(freq_str) * 1000 * 60) if freq_str else 600000
     except Exception as e:
         lbl_status.config(text=f"Error en parámetros: {e}")
         return
@@ -202,7 +260,6 @@ def schedule_next_capture():
     if not timelapse_running:
         return
     now = datetime.now()
-    # Verifica rango de días
     dia_actual = now.strftime("%A").lower()
     dias_es = {
         "monday": "lunes", "tuesday": "martes", "wednesday": "miércoles",
@@ -212,7 +269,6 @@ def schedule_next_capture():
     if days_selected and dia_actual_es not in days_selected:
         root.after(interval_ms, schedule_next_capture)
         return
-    # Verifica rango de horas
     if hour_start and hour_end:
         hora_actual = now.strftime("%H:%M")
         if not (hour_start <= hora_actual <= hour_end):
@@ -223,25 +279,21 @@ def schedule_next_capture():
         next_capture_time = now + timedelta(milliseconds=interval_ms)
     root.after(interval_ms, schedule_next_capture)
 
-def abrir_carpeta_fotos():
-    path = os.path.realpath(PHOTO_DIR)
-    if sys.platform == "win32":
-        os.startfile(path)
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", path])
-    else:
-        subprocess.Popen(["xdg-open", path])
+# -------------------- INICIALIZACIÓN DE INTERFAZ --------------------
 
-#root = tk.Tk()
-#root.title("Katcam Pro")
-#root.iconbitmap("katcam_multi.ico")
-#root.configure(bg=BG_COLOR)
-root = tb.Window(themename="darkly")  # Usa un tema oscuro profesional
+root = tk.Tk()
 root.title("Katcam Pro")
 root.iconbitmap("katcam_multi.ico")
 root.configure(bg=BG_COLOR)
 
-# Cargar y mostrar el logo
+# Menú para cambiar carpeta de fotos
+menubar = tk.Menu(root, bg=BG_COLOR, fg=FG_COLOR)
+root.config(menu=menubar)
+carpeta_menu = tk.Menu(menubar, tearoff=0, bg=BG_COLOR, fg=FG_COLOR)
+menubar.add_cascade(label="Opciones", menu=carpeta_menu)
+carpeta_menu.add_command(label="Cambiar carpeta de fotos...", command=cambiar_directorio_fotos)
+
+# Logo
 logo_img = Image.open("logo_katcam.png")
 logo_img = logo_img.resize((350, 150))
 logo_photo = ImageTk.PhotoImage(logo_img)
@@ -251,10 +303,9 @@ logo_label.pack(pady=(15, 10))
 main_frame = tk.Frame(root, bg=BG_COLOR)
 main_frame.pack(padx=10, pady=10)
 
-# Columna 1: Frame para imagen/transmisión
+# Columna 1: Imagen
 image_frame = tk.Frame(main_frame, bg=BG_COLOR)
 image_frame.grid(row=0, column=0, padx=10, pady=10, sticky="n")
-
 tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 12, "bold"), bg=BG_COLOR, fg=FG_COLOR).pack(pady=5)
 lbl_main_image = tk.Label(image_frame, bg="gray")
 lbl_main_image.pack(pady=5)
@@ -262,30 +313,34 @@ lbl_main_image.pack(pady=5)
 # Columna 2: Botones
 button_frame = tk.Frame(main_frame, bg=BG_COLOR)
 button_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
+tk.Label(button_frame, text="", bg=BG_COLOR).pack(pady=5)  # Título vacío para alinear
 
-tk.Label(button_frame, text="", bg=BG_COLOR).pack(pady=5)
-
-btn_take = tb.Button(
-    button_frame, text="Sacar Foto", command=take_and_update, width=25, bootstyle="warning rounded", 
-    style="TButton", padding=10
+btn_take = tk.Button(
+    button_frame, text="Sacar Foto", command=take_and_update, width=25, height=2,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
+    bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
 )
 btn_take.pack(pady=8)
 
-btn_stream = tb.Button(
-    button_frame, text="Iniciar transmisión", command=mostrar_transmision, width=25, bootstyle="warning rounded", 
-    style="TButton", padding=10
+btn_stream = tk.Button(
+    button_frame, text="Iniciar transmisión", command=mostrar_transmision, width=25, height=2,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
+    bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
 )
 btn_stream.pack(pady=8)
 
-btn_stop_stream = tb.Button(
-    button_frame, text="Detener transmisión", command=detener_transmision, width=25, bootstyle="warning rounded", 
-    style="TButton", padding=10
+btn_stop_stream = tk.Button(
+    button_frame, text="Detener transmisión", command=detener_transmision, width=25, height=2,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
+    bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
 )
 btn_stop_stream.pack(pady=8)
 
-btn_open_folder = tb.Button(
-    button_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, bootstyle="outline-warning rounded", 
-    style="TButton", padding=10
+btn_open_folder = tk.Button(
+    button_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, height=2,
+    bg=BG_COLOR, fg=BTN_COLOR, activebackground=BG_COLOR, activeforeground=BTN_COLOR,
+    bd=2, highlightbackground=BTN_BORDER_COLOR, highlightcolor=BTN_BORDER_COLOR,
+    font=("Arial", 12, "bold"), padx=10, pady=10
 )
 btn_open_folder.pack(pady=8)
 
@@ -295,7 +350,6 @@ lbl_status.pack(pady=5)
 # Columna 3: Configuración timelapse
 config_frame = tk.Frame(main_frame, bg=BG_COLOR)
 config_frame.grid(row=0, column=2, padx=10, pady=10, sticky="n")
-
 tk.Label(config_frame, text="Configuración Timelapse", font=("Arial", 12, "bold"), bg=BG_COLOR, fg=FG_COLOR).grid(row=0, column=0, columnspan=2, pady=5)
 tk.Label(config_frame, text="Frecuencia (minutos):", bg=BG_COLOR, fg=FG_COLOR).grid(row=1, column=0, sticky="e")
 entry_freq = tk.Entry(config_frame)
@@ -327,32 +381,34 @@ entry_hour_end.insert(0, "18:00")
 btn_start = tk.Button(
     config_frame, text="Iniciar Timelapse", command=start_timelapse, width=25, height=2,
     bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
-    bd=0, font=("Arial", 10, "bold")
+    bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
 )
 btn_start.grid(row=5, column=0, columnspan=2, pady=5)
 
 btn_stop = tk.Button(
     config_frame, text="Detener Timelapse", command=stop_timelapse, width=25, height=2,
     bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
-    bd=0, font=("Arial", 10, "bold")
+    bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
 )
 btn_stop.grid(row=6, column=0, columnspan=2, pady=5)
 
-cargar_configuracion()  # Carga la configuración al iniciar
-update_main_image()
+# -------------------- INICIALIZACIÓN DE VARIABLES Y ARRANQUE --------------------
 
-# Variables globales para timelapse
 timelapse_running = False
 next_capture_time = None
-interval_ms = 600000  # 10 minutos por defecto
+interval_ms = 600000
+dias_lista = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 days_selected = dias_lista.copy()
 hour_start = "08:00"
 hour_end = "18:00"
 
+PHOTO_DIR = inicializar_directorio_fotos()
+cargar_configuracion()
+update_main_image()
+
 def sync_auto():
     sincronizar_fotos()
-    root.after(60000, sync_auto)  # cada 60 segundos (60000 ms)
+    root.after(60000, sync_auto)
 
 sync_auto()
-
 root.mainloop()
