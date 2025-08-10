@@ -5,8 +5,17 @@ import os
 from datetime import datetime, timedelta
 import json
 import shutil
+import subprocess
+import sys
 
 CONFIG_FILE = "katcam_config.json"
+
+# Colores corporativos
+BG_COLOR = "#181818"
+FG_COLOR = "#FFFFFF"
+BTN_COLOR = "#FFD600"
+BTN_TEXT_COLOR = "#181818"
+BTN_BORDER_COLOR = "#FFD600"
 
 def guardar_configuracion():
     config = {
@@ -49,8 +58,6 @@ def encontrar_pendrive():
             if os.path.exists(fotos_path) and os.path.isdir(fotos_path):
                 return fotos_path
     return None
-
-
 
 def encontrar_google_drive():
     posibles_nombres = ["Mi unidad", "Google Drive"]
@@ -104,13 +111,13 @@ def update_main_image():
         img = Image.open(last_photo)
         img = img.resize((400, 300))
         photo = ImageTk.PhotoImage(img)
-        lbl_main_image.config(image=photo, width=400, height=300)
+        lbl_main_image.config(image=photo)
         lbl_main_image.image = photo
 
 def update_stream_image(img):
     img = img.resize((400, 300))
     photo = ImageTk.PhotoImage(img)
-    lbl_main_image.config(image=photo, width=400, height=300)
+    lbl_main_image.config(image=photo)
     lbl_main_image.image = photo
 
 def take_and_update():
@@ -215,80 +222,118 @@ def schedule_next_capture():
         next_capture_time = now + timedelta(milliseconds=interval_ms)
     root.after(interval_ms, schedule_next_capture)
 
+def abrir_carpeta_fotos():
+    path = os.path.realpath(PHOTO_DIR)
+    if sys.platform == "win32":
+        os.startfile(path)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
+
 root = tk.Tk()
 root.title("Katcam Pro")
 root.iconbitmap("katcam_multi.ico")
-
-root.configure(bg="#f5f5f5")
+root.configure(bg=BG_COLOR)
 
 # Cargar y mostrar el logo
 logo_img = Image.open("logo_katcam.png")
-logo_img = logo_img.resize((350, 150))  # Ajusta el tamaño según prefieras
+logo_img = logo_img.resize((350, 150))
 logo_photo = ImageTk.PhotoImage(logo_img)
-logo_label = tk.Label(root, image=logo_photo, bg="#f5f5f5")
-logo_label.pack(pady=(15, 10)) 
+logo_label = tk.Label(root, image=logo_photo, bg=BG_COLOR)
+logo_label.pack(pady=(15, 10))
 
-main_frame = tk.Frame(root, bg="#f5f5f5")
+main_frame = tk.Frame(root, bg=BG_COLOR)
 main_frame.pack(padx=10, pady=10)
 
 # Columna 1: Frame para imagen/transmisión
-image_frame = tk.Frame(main_frame, bg="#f5f5f5")
+image_frame = tk.Frame(main_frame, bg=BG_COLOR)
 image_frame.grid(row=0, column=0, padx=10, pady=10, sticky="n")
 
-tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 12, "bold")).pack(pady=5)
-#lbl_main_image = tk.Label(image_frame, width=400, height=300, bg="gray")
+tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 12, "bold"), bg=BG_COLOR, fg=FG_COLOR).pack(pady=5)
 lbl_main_image = tk.Label(image_frame, bg="gray")
 lbl_main_image.pack(pady=5)
 
 # Columna 2: Botones
-button_frame = tk.Frame(main_frame, bg="#f5f5f5")
+button_frame = tk.Frame(main_frame, bg=BG_COLOR)
 button_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
 
-btn_take = tk.Button(button_frame, text="Sacar Foto", command=take_and_update, width=25, height=2)
+btn_take = tk.Button(
+    button_frame, text="Sacar Foto", command=take_and_update, width=25, height=2,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
+    bd=0, font=("Arial", 10, "bold")
+)
 btn_take.pack(pady=5)
 
-btn_stream = tk.Button(button_frame, text="Iniciar transmisión", command=mostrar_transmision, width=25, height=2)
+btn_stream = tk.Button(
+    button_frame, text="Iniciar transmisión", command=mostrar_transmision, width=25, height=2,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
+    bd=0, font=("Arial", 10, "bold")
+)
 btn_stream.pack(pady=5)
 
-btn_stop_stream = tk.Button(button_frame, text="Detener transmisión", command=detener_transmision, width=25, height=2)
+btn_stop_stream = tk.Button(
+    button_frame, text="Detener transmisión", command=detener_transmision, width=25, height=2,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
+    bd=0, font=("Arial", 10, "bold")
+)
 btn_stop_stream.pack(pady=5)
 
-lbl_status = tk.Label(button_frame, text="")
+btn_open_folder = tk.Button(
+    button_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, height=2,
+    bg=BG_COLOR, fg=BTN_COLOR, activebackground=BG_COLOR, activeforeground=BTN_COLOR,
+    bd=2, highlightbackground=BTN_BORDER_COLOR, highlightcolor=BTN_BORDER_COLOR,
+    font=("Arial", 10, "bold")
+)
+btn_open_folder.pack(pady=5)
+
+lbl_status = tk.Label(button_frame, text="", bg=BG_COLOR, fg=FG_COLOR)
 lbl_status.pack(pady=5)
 
 # Columna 3: Configuración timelapse
-config_frame = tk.Frame(main_frame, bg="#f5f5f5")
+config_frame = tk.Frame(main_frame, bg=BG_COLOR)
 config_frame.grid(row=0, column=2, padx=10, pady=10, sticky="n")
 
-tk.Label(config_frame, text="Configuración Timelapse", font=("Arial", 12, "bold")).grid(row=0, column=0, columnspan=2, pady=5)
-
-tk.Label(config_frame, text="Frecuencia (minutos):").grid(row=1, column=0, sticky="e")
+tk.Label(config_frame, text="Configuración Timelapse", font=("Arial", 12, "bold"), bg=BG_COLOR, fg=FG_COLOR).grid(row=0, column=0, columnspan=2, pady=5)
+tk.Label(config_frame, text="Frecuencia (minutos):", bg=BG_COLOR, fg=FG_COLOR).grid(row=1, column=0, sticky="e")
 entry_freq = tk.Entry(config_frame)
 entry_freq.grid(row=1, column=1)
 entry_freq.insert(0, "10")
 
-tk.Label(config_frame, text="Días a funcionar:").grid(row=2, column=0, sticky="ne")
+tk.Label(config_frame, text="Días a funcionar:", bg=BG_COLOR, fg=FG_COLOR).grid(row=2, column=0, sticky="ne")
 dias_lista = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 day_vars = [tk.BooleanVar(value=True) for _ in dias_lista]
-days_frame = tk.Frame(config_frame)
+days_frame = tk.Frame(config_frame, bg=BG_COLOR)
 days_frame.grid(row=2, column=1, sticky="w")
 for i, dia in enumerate(dias_lista):
-    tk.Checkbutton(days_frame, text=dia.capitalize(), variable=day_vars[i]).pack(anchor="w")
+    tk.Checkbutton(
+        days_frame, text=dia.capitalize(), variable=day_vars[i],
+        bg=BG_COLOR, fg=FG_COLOR, selectcolor=BTN_COLOR,
+        activebackground=BG_COLOR, activeforeground=BTN_COLOR
+    ).pack(anchor="w")
 
-tk.Label(config_frame, text="Hora inicio (HH:MM):").grid(row=3, column=0, sticky="e")
+tk.Label(config_frame, text="Hora inicio (HH:MM):", bg=BG_COLOR, fg=FG_COLOR).grid(row=3, column=0, sticky="e")
 entry_hour_start = tk.Entry(config_frame)
 entry_hour_start.grid(row=3, column=1)
 entry_hour_start.insert(0, "08:00")
 
-tk.Label(config_frame, text="Hora fin (HH:MM):").grid(row=4, column=0, sticky="e")
+tk.Label(config_frame, text="Hora fin (HH:MM):", bg=BG_COLOR, fg=FG_COLOR).grid(row=4, column=0, sticky="e")
 entry_hour_end = tk.Entry(config_frame)
 entry_hour_end.grid(row=4, column=1)
 entry_hour_end.insert(0, "18:00")
 
-btn_start = tk.Button(config_frame, text="Iniciar Timelapse", command=start_timelapse, width=25, height=2)
+btn_start = tk.Button(
+    config_frame, text="Iniciar Timelapse", command=start_timelapse, width=25, height=2,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
+    bd=0, font=("Arial", 10, "bold")
+)
 btn_start.grid(row=5, column=0, columnspan=2, pady=5)
 
-btn_stop = tk.Button(config_frame, text="Detener Timelapse", command=stop_timelapse, width=25, height=2)
+btn_stop = tk.Button(
+    config_frame, text="Detener Timelapse", command=stop_timelapse, width=25, height=2,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
+    bd=0, font=("Arial", 10, "bold")
+)
 btn_stop.grid(row=6, column=0, columnspan=2, pady=5)
 
 cargar_configuracion()  # Carga la configuración al iniciar
