@@ -7,6 +7,7 @@ import json
 import shutil
 import subprocess
 import sys
+import ttkbootstrap as tb
 
 CONFIG_FILE = "katcam_config.json"
 
@@ -231,7 +232,11 @@ def abrir_carpeta_fotos():
     else:
         subprocess.Popen(["xdg-open", path])
 
-root = tk.Tk()
+#root = tk.Tk()
+#root.title("Katcam Pro")
+#root.iconbitmap("katcam_multi.ico")
+#root.configure(bg=BG_COLOR)
+root = tb.Window(themename="darkly")  # Usa un tema oscuro profesional
 root.title("Katcam Pro")
 root.iconbitmap("katcam_multi.ico")
 root.configure(bg=BG_COLOR)
@@ -258,34 +263,31 @@ lbl_main_image.pack(pady=5)
 button_frame = tk.Frame(main_frame, bg=BG_COLOR)
 button_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
 
-btn_take = tk.Button(
-    button_frame, text="Sacar Foto", command=take_and_update, width=25, height=2,
-    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
-    bd=0, font=("Arial", 10, "bold")
-)
-btn_take.pack(pady=5)
+tk.Label(button_frame, text="", bg=BG_COLOR).pack(pady=5)
 
-btn_stream = tk.Button(
-    button_frame, text="Iniciar transmisión", command=mostrar_transmision, width=25, height=2,
-    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
-    bd=0, font=("Arial", 10, "bold")
+btn_take = tb.Button(
+    button_frame, text="Sacar Foto", command=take_and_update, width=25, bootstyle="warning rounded", 
+    style="TButton", padding=10
 )
-btn_stream.pack(pady=5)
+btn_take.pack(pady=8)
 
-btn_stop_stream = tk.Button(
-    button_frame, text="Detener transmisión", command=detener_transmision, width=25, height=2,
-    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
-    bd=0, font=("Arial", 10, "bold")
+btn_stream = tb.Button(
+    button_frame, text="Iniciar transmisión", command=mostrar_transmision, width=25, bootstyle="warning rounded", 
+    style="TButton", padding=10
 )
-btn_stop_stream.pack(pady=5)
+btn_stream.pack(pady=8)
 
-btn_open_folder = tk.Button(
-    button_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, height=2,
-    bg=BG_COLOR, fg=BTN_COLOR, activebackground=BG_COLOR, activeforeground=BTN_COLOR,
-    bd=2, highlightbackground=BTN_BORDER_COLOR, highlightcolor=BTN_BORDER_COLOR,
-    font=("Arial", 10, "bold")
+btn_stop_stream = tb.Button(
+    button_frame, text="Detener transmisión", command=detener_transmision, width=25, bootstyle="warning rounded", 
+    style="TButton", padding=10
 )
-btn_open_folder.pack(pady=5)
+btn_stop_stream.pack(pady=8)
+
+btn_open_folder = tb.Button(
+    button_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, bootstyle="outline-warning rounded", 
+    style="TButton", padding=10
+)
+btn_open_folder.pack(pady=8)
 
 lbl_status = tk.Label(button_frame, text="", bg=BG_COLOR, fg=FG_COLOR)
 lbl_status.pack(pady=5)
