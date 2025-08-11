@@ -59,6 +59,15 @@ def take_photo(dest_folder, cam_index=0):
         cv2.imwrite(dest_path, frame)
         print(f"Foto guardada en: {dest_path}")
         # Si tienes Google Drive y quieres copiar, puedes hacerlo aquí si lo deseas
+        drive_dir = encontrar_google_drive()
+        if drive_dir:
+            try:
+                drive_path = os.path.join(drive_dir, filename)
+                shutil.copy2(dest_path, drive_path)
+                print(f"Foto también copiada a Google Drive: {drive_path}")
+            except Exception as e:
+                print(f"No se pudo copiar al Drive: {e}")
+
         return dest_path
     else:
         print("Error al capturar imagen")

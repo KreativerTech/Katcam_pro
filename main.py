@@ -324,7 +324,7 @@ def take_and_update():
     if streaming:
         detener_transmision()
         root.update()
-    take_photo(PHOTO_DIR)  # Pasa la ruta actual (asegúrate que camera.take_photo acepta la ruta)
+    take_photo(PHOTO_DIR, CAM_INDEX)  # Pasa la ruta actual (asegúrate que camera.take_photo acepta la ruta)
     update_main_image()
     if was_streaming:
         mostrar_transmision()
