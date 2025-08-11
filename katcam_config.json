@@ -1,0 +1,17 @@
+{
+  "frecuencia": "10",
+  "dias": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "hora_inicio": "08:00",
+  "hora_fin": "18:00",
+  "timelapse_activo": false,
+  "photo_dir": "E:\\FOTOS",
+  "cam_index": 0
+}

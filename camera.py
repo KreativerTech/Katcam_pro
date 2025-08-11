@@ -41,8 +41,9 @@ else:
     raise FileNotFoundError("No se encontró el pendrive 'FOTOS' ni la carpeta de Google Drive 'KatcamAustralia/fotos'.")
 os.makedirs(PHOTO_DIR, exist_ok=True)
 
-def take_photo():
-    cap = cv2.VideoCapture(0)
+def take_photo(dest_folder, cam_index=0):
+    cap = cv2.VideoCapture(cam_index)
+    # Intenta máxima resolución soportada por la cámara
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 8000)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 6000)
     time.sleep(3)
@@ -54,18 +55,12 @@ def take_photo():
 
     if ret:
         filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-        pendrive_path = os.path.join(PHOTO_DIR, filename)
-        cv2.imwrite(pendrive_path, frame)
-        print(f"Foto guardada en pendrive: {pendrive_path}")
-
-        # Si hay Google Drive y es diferente al pendrive, copia la foto
-        if DRIVE_DIR and DRIVE_DIR != PHOTO_DIR:
-            drive_path = os.path.join(DRIVE_DIR, filename)
-            try:
-                shutil.copy2(pendrive_path, drive_path)
-                print(f"Foto copiada a Google Drive: {drive_path}")
-            except Exception as e:
-                print(f"No se pudo copiar al Drive: {e}")
+        dest_path = os.path.join(dest_folder, filename)
+        cv2.imwrite(dest_path, frame)
+        print(f"Foto guardada en: {dest_path}")
+        # Si tienes Google Drive y quieres copiar, puedes hacerlo aquí si lo deseas
+        return dest_path
     else:
         print("Error al capturar imagen")
+        return None
 
