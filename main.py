@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
 from tkinter import filedialog as fd
-from camera import take_photo  # Debe aceptar la ruta destino: take_photo(PHOTO_DIR)
+from camera import take_photo
 from PIL import Image, ImageTk, ImageOps
 import os
 from datetime import datetime, timedelta
@@ -24,9 +24,6 @@ BTN_BORDER_COLOR = "#FFD600"
 # -------------------- UTILIDADES --------------------
 
 def has_write_access(path: str) -> bool:
-    """
-    Devuelve True si se puede escribir en 'path'. Intenta crear y borrar un archivo temporal.
-    """
     try:
         os.makedirs(path, exist_ok=True)
         testfile = os.path.join(path, ".katcam_write_test")
@@ -55,7 +52,6 @@ def seleccionar_camara():
     if not cams:
         messagebox.showerror("Cámaras", "No se detectaron cámaras conectadas.")
         return
-    # Ventana simple para elegir
     win = tk.Toplevel(root)
     win.title("Seleccionar cámara")
     win.configure(bg=BG_COLOR)
@@ -66,12 +62,17 @@ def seleccionar_camara():
     def set_cam():
         global CAM_INDEX
         CAM_INDEX = var.get()
+        guardar_configuracion()
         win.destroy()
         messagebox.showinfo("Cámara", f"Cámara seleccionada: {CAM_INDEX}")
     tk.Button(win, text="Seleccionar", command=set_cam, bg=BTN_COLOR, fg=BTN_TEXT_COLOR, font=("Arial", 10, "bold")).pack(pady=10)
 
 def guardar_configuracion():
     try:
+        prev = {}
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                prev = json.load(f)
         config = {
             "frecuencia": entry_freq.get(),
             "dias": [var.get() for var in day_vars],
@@ -79,7 +80,8 @@ def guardar_configuracion():
             "hora_fin": entry_hour_end.get(),
             "timelapse_activo": timelapse_running,
             "photo_dir": PHOTO_DIR,
-            "cam_index": CAM_INDEX
+            "cam_index": CAM_INDEX,
+            "drive_dir": prev.get("drive_dir")
         }
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
@@ -87,11 +89,7 @@ def guardar_configuracion():
         messagebox.showwarning("Config", f"No se pudo guardar configuración: {e}")
 
 def cargar_configuracion():
-    """
-    CORREGIDO: ahora primero lee el archivo y recién después usa 'config'.
-    Además actualiza PHOTO_DIR si corresponde y rellena la UI.
-    """
-    global CAM_INDEX, PHOTO_DIR
+    global CAM_INDEX, PHOTO_DIR, DRIVE_DIR
 
     if not os.path.exists(CONFIG_FILE):
         return None
@@ -103,54 +101,41 @@ def cargar_configuracion():
         messagebox.showwarning("Config", f"No se pudo leer la configuración: {e}")
         return None
 
-    # Aplicar a variables globales
     CAM_INDEX = config.get("cam_index", 0)
-
     photo_dir_saved = config.get("photo_dir")
     if photo_dir_saved and os.path.exists(photo_dir_saved):
         PHOTO_DIR = photo_dir_saved
+    drive_dir_saved = config.get("drive_dir")
+    if drive_dir_saved and os.path.exists(drive_dir_saved):
+        DRIVE_DIR = drive_dir_saved
 
-    # Rellenar UI (si los widgets existen)
     try:
         entry_freq.delete(0, "end")
         entry_freq.insert(0, config.get("frecuencia", "10"))
-
         dias_cfg = config.get("dias", [True] * 7)
         for i, valor in enumerate(dias_cfg):
             day_vars[i].set(valor)
-
         entry_hour_start.delete(0, "end")
         entry_hour_start.insert(0, config.get("hora_inicio", "08:00"))
-
         entry_hour_end.delete(0, "end")
         entry_hour_end.insert(0, config.get("hora_fin", "18:00"))
     except Exception:
-        # Si todavía no existe la UI, ignoramos el rellenado
         pass
 
     if config.get("timelapse_activo", False):
-        # Espera a que la UI esté lista
         root.after(500, start_timelapse)
 
     return config
 
-# -------------------- SELECCIÓN DE CARPETA DE FOTOS --------------------
+# -------------------- SELECCIÓN DE CARPETAS MANUAL Y PERSISTENTE --------------------
 
-def seleccionar_directorio_manual():
-    carpeta = fd.askdirectory(title="Selecciona la carpeta para guardar fotos")
+def seleccionar_directorio_manual(titulo):
+    carpeta = fd.askdirectory(title=titulo)
     if carpeta:
         return carpeta
     return None
 
 def inicializar_directorio_fotos():
-    """
-    Devuelve la carpeta donde guardar fotos. Intenta:
-    1) Config previa válida
-    2) Pendrive con carpeta 'FOTOS' con permiso de escritura
-    3) Google Drive/KatcamAustralia/fotos con permiso de escritura
-    4) Selección manual
-    """
-    # 1) Config previa
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -160,36 +145,37 @@ def inicializar_directorio_fotos():
                 return p
     except Exception:
         pass
-
-    # 2) Pendrive
-    pendrive = encontrar_pendrive()
-    if pendrive:
-        return pendrive
-
-    # 3) Google Drive
-    drive = encontrar_google_drive()
-    if drive:
-        return drive
-
-    # 4) Manual
-    respuesta = messagebox.askyesno(
-        "Seleccionar carpeta",
-        "No se encontró el pendrive 'FOTOS' ni la carpeta de Google Drive.\n¿Deseas seleccionar una carpeta manualmente?"
-    )
-    if respuesta:
-        ruta = seleccionar_directorio_manual()
+    while True:
+        ruta = seleccionar_directorio_manual("Selecciona la carpeta para guardar fotos (pendrive o local)")
         if ruta and has_write_access(ruta):
             return ruta
-        else:
+        elif ruta:
             messagebox.showerror("Permisos", "No hay permiso de escritura en la carpeta elegida.")
-            sys.exit(1)
-    else:
-        messagebox.showerror("Error", "No se puede continuar sin una carpeta para guardar fotos.")
-        sys.exit(1)
+        else:
+            messagebox.showerror("Error", "Debes seleccionar una carpeta para continuar.")
+
+def inicializar_directorio_drive():
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            d = cfg.get("drive_dir")
+            if d and os.path.exists(d) and has_write_access(d):
+                return d
+    except Exception:
+        pass
+    while True:
+        ruta = seleccionar_directorio_manual("Selecciona la carpeta de Google Drive (KatcamAustralia/fotos)")
+        if ruta and has_write_access(ruta):
+            return ruta
+        elif ruta:
+            messagebox.showerror("Permisos", "No hay permiso de escritura en la carpeta elegida.")
+        else:
+            messagebox.showerror("Error", "Debes seleccionar una carpeta para continuar.")
 
 def cambiar_directorio_fotos():
     global PHOTO_DIR
-    nueva = seleccionar_directorio_manual()
+    nueva = seleccionar_directorio_manual("Selecciona la carpeta para guardar fotos")
     if nueva and has_write_access(nueva):
         PHOTO_DIR = nueva
         guardar_configuracion()
@@ -198,53 +184,31 @@ def cambiar_directorio_fotos():
     elif nueva:
         messagebox.showerror("Permisos", "No hay permiso de escritura en la carpeta seleccionada.")
 
-# -------------------- DETECCIÓN DE UNIDADES --------------------
-
-def encontrar_pendrive():
-    """
-    Busca unidades D:..Z: y usa/crea 'FOTOS' si hay permiso de escritura.
-    Evita reventar con 'Acceso denegado'.
-    """
-    for letra in "DEFGHIJKLMNOPQRSTUVWXYZ":
-        unidad = f"{letra}:\\"
-        if os.path.exists(unidad):
-            fotos_path = os.path.join(unidad, "FOTOS")
-            try:
-                os.makedirs(fotos_path, exist_ok=True)
-                if has_write_access(fotos_path):
-                    return fotos_path
-            except Exception:
-                # Sin permisos en esa unidad, probamos la siguiente
-                continue
-    return None
-
-def encontrar_google_drive():
-    """
-    Busca ubicaciones típicas de Google Drive y devuelve la carpeta
-    '.../KatcamAustralia/fotos' si existe o si puede crearse con permisos.
-    """
-    posibles_nombres = ["Mi unidad", "Google Drive"]
-    for letra in "CDEFGHIJKLMNOPQRSTUVWXYZ":
-        unidad = f"{letra}:\\"
-        if not os.path.exists(unidad):
-            continue
-        for nombre in posibles_nombres:
-            ruta_base = os.path.join(unidad, nombre)
-            ruta = os.path.join(ruta_base, "KatcamAustralia", "fotos")
-            try:
-                os.makedirs(ruta, exist_ok=True)
-                if has_write_access(ruta):
-                    return ruta
-            except Exception:
-                continue
-    return None
+def seleccionar_drive_manual():
+    global DRIVE_DIR
+    carpeta = seleccionar_directorio_manual("Selecciona la carpeta de Google Drive (KatcamAustralia/fotos)")
+    if carpeta and has_write_access(carpeta):
+        DRIVE_DIR = carpeta
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            else:
+                cfg = {}
+            cfg["drive_dir"] = carpeta
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            messagebox.showwarning("Config", f"No se pudo guardar la ruta de Drive: {e}")
+        messagebox.showinfo("Ruta actualizada", f"Carpeta de Google Drive cambiada a:\n{DRIVE_DIR}")
+    elif carpeta:
+        messagebox.showerror("Permisos", "No hay permiso de escritura en la carpeta seleccionada.")
 
 # -------------------- SINCRONIZACIÓN --------------------
 
 def sincronizar_fotos():
     try:
-        drive_dir = encontrar_google_drive()
-        if not drive_dir:
+        if not os.path.exists(DRIVE_DIR):
             lbl_status.config(text="No se encontró Google Drive para sincronizar.")
             return
         if not os.path.exists(PHOTO_DIR):
@@ -252,11 +216,11 @@ def sincronizar_fotos():
             return
 
         fotos_pendrive = sorted([f for f in os.listdir(PHOTO_DIR) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
-        fotos_drive = set(os.listdir(drive_dir))
+        fotos_drive = set(os.listdir(DRIVE_DIR))
         nuevas = [f for f in fotos_pendrive if f not in fotos_drive]
 
         for f in nuevas:
-            shutil.copy2(os.path.join(PHOTO_DIR, f), os.path.join(drive_dir, f))
+            shutil.copy2(os.path.join(PHOTO_DIR, f), os.path.join(DRIVE_DIR, f))
 
         if nuevas:
             lbl_status.config(text=f"Sincronizadas {len(nuevas)} fotos al Drive.")
@@ -276,7 +240,6 @@ def get_last_photo():
     return None
 
 def _placeholder_image(size=(600, 500)):
-    # Imagen gris como placeholder si no hay archivo por defecto
     img = Image.new("RGB", size, (64, 64, 64))
     return img
 
@@ -286,12 +249,18 @@ def update_main_image():
         if last_photo and os.path.exists(last_photo):
             img = Image.open(last_photo)
         else:
-            # Intenta cargar tu imagen por defecto, si falla usa placeholder
             try:
                 img = Image.open("kreativerkatcam.jpg")
             except Exception:
                 img = _placeholder_image()
-        img = ImageOps.contain(img, (600, 500))
+
+        # Calcula el tamaño como % de la ventana principal
+        root.update_idletasks()
+        win_width = root.winfo_width()
+        win_height = root.winfo_height()
+        img_width = int(win_width * 0.6)
+        img_height = int(win_height * 0.6)
+        img = ImageOps.contain(img, (img_width, img_height))
         photo = ImageTk.PhotoImage(img)
         lbl_main_image.config(image=photo)
         lbl_main_image.image = photo
@@ -324,7 +293,7 @@ def take_and_update():
     if streaming:
         detener_transmision()
         root.update()
-    take_photo(PHOTO_DIR, CAM_INDEX)  # Pasa la ruta actual (asegúrate que camera.take_photo acepta la ruta)
+    take_photo(PHOTO_DIR, CAM_INDEX)
     update_main_image()
     if was_streaming:
         mostrar_transmision()
@@ -422,13 +391,23 @@ try:
 except Exception:
     pass
 root.configure(bg=BG_COLOR)
+# --- NUEVO: Ajustar tamaño de ventana según % de pantalla y permitir redimensionar ---
+screen_width = root.winfo_screenwidth()
+screen_height = root.winfo_screenheight()
+win_width = int(screen_width * 0.8)
+win_height = int(screen_height * 0.8)
+x = (screen_width - win_width) // 2
+y = (screen_height - win_height) // 2
+root.geometry(f"{win_width}x{win_height}+{x}+{y}")
+root.resizable(True, True)
 
-# Menú para cambiar carpeta de fotos
+# Menú para cambiar carpetas y cámara
 menubar = tk.Menu(root, bg=BG_COLOR, fg=FG_COLOR)
 root.config(menu=menubar)
 carpeta_menu = tk.Menu(menubar, tearoff=0, bg=BG_COLOR, fg=FG_COLOR)
 menubar.add_cascade(label="Opciones", menu=carpeta_menu)
 carpeta_menu.add_command(label="Cambiar carpeta de fotos...", command=cambiar_directorio_fotos)
+carpeta_menu.add_command(label="Cambiar carpeta de Google Drive...", command=seleccionar_drive_manual)
 carpeta_menu.add_separator()
 carpeta_menu.add_command(label="Seleccionar cámara...", command=seleccionar_camara)
 
@@ -440,7 +419,6 @@ try:
     logo_label = tk.Label(root, image=logo_photo, bg=BG_COLOR)
     logo_label.pack(pady=(15, 10))
 except Exception:
-    # Si no hay logo, no se cae la app
     pass
 
 main_frame = tk.Frame(root, bg=BG_COLOR)
@@ -456,7 +434,7 @@ lbl_main_image.pack(pady=5)
 # Columna 2: Botones
 button_frame = tk.Frame(main_frame, bg=BG_COLOR)
 button_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
-tk.Label(button_frame, text="", bg=BG_COLOR).pack(pady=5)  # Título vacío para alinear
+tk.Label(button_frame, text="", bg=BG_COLOR).pack(pady=5)
 
 btn_take = tk.Button(
     button_frame, text="Sacar Foto", command=take_and_update, width=25, height=2,
@@ -465,32 +443,53 @@ btn_take = tk.Button(
 )
 btn_take.pack(pady=8)
 
-btn_stream = tk.Button(
-    button_frame, text="Iniciar transmisión", command=mostrar_transmision, width=25, height=2,
+# Botón tipo switch para transmisión
+def toggle_transmision():
+    if not getattr(toggle_transmision, "on", False):
+        mostrar_transmision()
+        btn_switch_trans.config(
+            text="Detener transmisión",
+            bg="#FF5252",  # Rojo para indicar "activo"
+            fg="#FFFFFF"
+        )
+        toggle_transmision.on = True
+    else:
+        detener_transmision()
+        btn_switch_trans.config(
+            text="Iniciar transmisión",
+            bg=BTN_COLOR,  # Amarillo para "inactivo"
+            fg=BTN_TEXT_COLOR
+        )
+        toggle_transmision.on = False
+
+toggle_transmision.on = False
+
+btn_switch_trans = tk.Button(
+    button_frame, text="Iniciar transmisión", command=toggle_transmision, width=25, height=2,
     bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
     bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
 )
-btn_stream.pack(pady=8)
+btn_switch_trans.pack(pady=8)
 
-btn_stop_stream = tk.Button(
-    button_frame, text="Detener transmisión", command=detener_transmision, width=25, height=2,
+btn_start = tk.Button(
+    button_frame, text="Iniciar Timelapse", command=start_timelapse, width=25, height=2,
     bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
     bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
 )
-btn_stop_stream.pack(pady=8)
+btn_start.pack(pady=8)
 
-btn_open_folder = tk.Button(
-    button_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, height=2,
-    bg=BG_COLOR, fg=BTN_COLOR, activebackground=BG_COLOR, activeforeground=BTN_COLOR,
-    bd=2, highlightbackground=BTN_BORDER_COLOR, highlightcolor=BTN_BORDER_COLOR,
-    font=("Arial", 12, "bold"), padx=10, pady=10
+btn_stop = tk.Button(
+    button_frame, text="Detener Timelapse", command=stop_timelapse, width=25, height=2,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
+    bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
 )
-btn_open_folder.pack(pady=8)
+btn_stop.pack(pady=8)
 
 lbl_status = tk.Label(button_frame, text="", bg=BG_COLOR, fg=FG_COLOR)
 lbl_status.pack(pady=5)
 
 # Columna 3: Configuración timelapse
+
 config_frame = tk.Frame(main_frame, bg=BG_COLOR)
 config_frame.grid(row=0, column=2, padx=10, pady=10, sticky="n")
 tk.Label(config_frame, text="Configuración Timelapse", font=("Arial", 12, "bold"), bg=BG_COLOR, fg=FG_COLOR).grid(row=0, column=0, columnspan=2, pady=5)
@@ -506,10 +505,17 @@ days_frame = tk.Frame(config_frame, bg=BG_COLOR)
 days_frame.grid(row=2, column=1, sticky="w")
 for i, dia in enumerate(dias_lista):
     tk.Checkbutton(
-        days_frame, text=dia.capitalize(), variable=day_vars[i],
-        bg=BG_COLOR, fg=FG_COLOR, selectcolor=BTN_COLOR,
-        activebackground=BG_COLOR, activeforeground=BTN_COLOR
-    ).pack(anchor="w")
+        days_frame,
+        text=dia.capitalize(),
+        variable=day_vars[i],
+        bg=BG_COLOR,            # Fondo del texto (color corporativo)
+        fg="white",             # Texto negro
+        selectcolor="black",    # Fondo del cuadro marcado blanco
+        activebackground=BG_COLOR,
+        activeforeground="black",
+        font=("Arial", 11, "bold"),  # Más pequeño y negrita
+        padx=6, pady=2
+    ).pack(anchor="w", pady=1)
 
 tk.Label(config_frame, text="Hora inicio (HH:MM):", bg=BG_COLOR, fg=FG_COLOR).grid(row=3, column=0, sticky="e")
 entry_hour_start = tk.Entry(config_frame)
@@ -521,19 +527,14 @@ entry_hour_end = tk.Entry(config_frame)
 entry_hour_end.grid(row=4, column=1)
 entry_hour_end.insert(0, "18:00")
 
-btn_start = tk.Button(
-    config_frame, text="Iniciar Timelapse", command=start_timelapse, width=25, height=2,
-    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
-    bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
-)
-btn_start.grid(row=5, column=0, columnspan=2, pady=5)
 
-btn_stop = tk.Button(
-    config_frame, text="Detener Timelapse", command=stop_timelapse, width=25, height=2,
-    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
-    bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
+btn_open_folder = tk.Button(
+    config_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, height=2,
+    bg=BG_COLOR, fg=BTN_COLOR, activebackground=BG_COLOR, activeforeground=BTN_COLOR,
+    bd=2, highlightbackground=BTN_BORDER_COLOR, highlightcolor=BTN_BORDER_COLOR,
+    font=("Arial", 12, "bold"), padx=10, pady=10
 )
-btn_stop.grid(row=6, column=0, columnspan=2, pady=5)
+btn_open_folder.grid(row=5, column=0, columnspan=2, pady=15)
 
 # -------------------- INICIALIZACIÓN DE VARIABLES Y ARRANQUE --------------------
 
@@ -545,10 +546,11 @@ days_selected = dias_lista.copy()
 hour_start = "08:00"
 hour_end = "18:00"
 
-# 1) Elegir carpeta de fotos con permisos
+# 1) Elegir carpeta de fotos y drive con permisos (solo la primera vez)
 PHOTO_DIR = inicializar_directorio_fotos()
+DRIVE_DIR = inicializar_directorio_drive()
 
-# 2) Cargar configuración (CORREGIDO)
+# 2) Cargar configuración
 cargar_configuracion()
 
 # 3) Pintar imagen inicial
@@ -563,6 +565,16 @@ def on_close():
     guardar_configuracion()
     root.destroy()
 root.protocol("WM_DELETE_WINDOW", on_close)
+
+resize_job = None
+
+def on_resize(event):
+    global resize_job
+    if resize_job is not None:
+        root.after_cancel(resize_job)
+    resize_job = root.after(300, update_main_image)  # Espera 300 ms después del último resize
+
+root.bind("<Configure>", on_resize)
 
 sync_auto()
 root.mainloop()
