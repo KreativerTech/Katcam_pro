@@ -209,10 +209,10 @@ def seleccionar_drive_manual():
 def sincronizar_fotos():
     try:
         if not os.path.exists(DRIVE_DIR):
-            lbl_status.config(text="No se encontró Google Drive para sincronizar.")
+            lbl_status_general.config(text="No se encontró Google Drive para sincronizar.")
             return
         if not os.path.exists(PHOTO_DIR):
-            lbl_status.config(text="Carpeta de fotos inválida.")
+            lbl_status_general.config(text="Carpeta de fotos inválida.")
             return
 
         fotos_pendrive = sorted([f for f in os.listdir(PHOTO_DIR) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
@@ -223,11 +223,11 @@ def sincronizar_fotos():
             shutil.copy2(os.path.join(PHOTO_DIR, f), os.path.join(DRIVE_DIR, f))
 
         if nuevas:
-            lbl_status.config(text=f"Sincronizadas {len(nuevas)} fotos al Drive.")
+            lbl_status_general.config(text=f"Sincronizadas {len(nuevas)} fotos al Drive.")
         else:
-            lbl_status.config(text="No hay fotos nuevas para sincronizar.")
+            lbl_status_general.config(text="No hay fotos nuevas para sincronizar.")
     except Exception as e:
-        lbl_status.config(text=f"Error al sincronizar: {e}")
+        lbl_status_general.config(text=f"Error al sincronizar: {e}")
 
 # -------------------- FUNCIONES DE IMAGEN --------------------
 
@@ -265,7 +265,7 @@ def update_main_image():
         lbl_main_image.config(image=photo)
         lbl_main_image.image = photo
     except Exception as e:
-        lbl_status.config(text=f"Error mostrando imagen: {e}")
+        lbl_status_general.config(text=f"Error mostrando imagen: {e}")
 
 def update_stream_image(img):
     img = ImageOps.contain(img, (600, 500))
@@ -293,8 +293,10 @@ def take_and_update():
     if streaming:
         detener_transmision()
         root.update()
+    lbl_status_general.config(text="Capturando foto...")
     take_photo(PHOTO_DIR, CAM_INDEX)
     update_main_image()
+    lbl_status_general.config(text="Foto tomada.")
     if was_streaming:
         mostrar_transmision()
 
@@ -304,7 +306,8 @@ def mostrar_transmision():
         return
     streaming = True
     cap_stream = cv2.VideoCapture(CAM_INDEX)
-    lbl_status.config(text="Transmisión en directo")
+    lbl_status_transmision.config(text="Transmisión: ACTIVA")
+    lbl_status_general.config(text="Transmisión en directo")
     actualizar_stream()
 
 def actualizar_stream():
@@ -325,7 +328,8 @@ def detener_transmision():
     if cap_stream is not None:
         cap_stream.release()
         cap_stream = None
-    lbl_status.config(text="Transmisión detenida")
+    lbl_status_transmision.config(text="Transmisión: DETENIDA")
+    lbl_status_general.config(text="Transmisión detenida")
     update_main_image()
 
 # -------------------- TIMELAPSE --------------------
@@ -347,20 +351,24 @@ def start_timelapse():
         next_capture_time = datetime.now()
         interval_ms = int(float(freq_str) * 1000 * 60) if freq_str else 600000
     except Exception as e:
-        lbl_status.config(text=f"Error en parámetros: {e}")
+        lbl_status_timelapse.config(text=f"Error en parámetros: {e}")
         return
-    lbl_status.config(text="Timelapse iniciado")
+    lbl_status_timelapse.config(text="Timelapse: ACTIVO")
+    lbl_status_general.config(text="Esperando próxima foto...")
     schedule_next_capture()
 
 def stop_timelapse():
     global timelapse_running
     timelapse_running = False
     guardar_configuracion()
-    lbl_status.config(text="Timelapse detenido")
+    lbl_status_timelapse.config(text="Timelapse: DETENIDO")
+    lbl_status_general.config(text="Timelapse detenido.")
 
 def schedule_next_capture():
     global timelapse_running, next_capture_time, interval_ms, days_selected, hour_start, hour_end
     if not timelapse_running:
+        lbl_status_timelapse.config(text="Timelapse: DETENIDO")
+        lbl_status_general.config(text="Timelapse detenido.")
         return
     now = datetime.now()
     dia_actual = now.strftime("%A").lower()
@@ -370,16 +378,22 @@ def schedule_next_capture():
     }
     dia_actual_es = dias_es.get(dia_actual, dia_actual)
     if days_selected and dia_actual_es not in days_selected:
+        lbl_status_general.config(text="Esperando día válido para timelapse...")
         root.after(interval_ms, schedule_next_capture)
         return
     if hour_start and hour_end:
         hora_actual = now.strftime("%H:%M")
         if not (hour_start <= hora_actual <= hour_end):
+            lbl_status_general.config(text="Fuera de horario. Esperando para timelapse...")
             root.after(interval_ms, schedule_next_capture)
             return
     if now >= next_capture_time:
+        lbl_status_general.config(text="Capturando foto para timelapse...")
         take_and_update()
         next_capture_time = now + timedelta(milliseconds=interval_ms)
+        lbl_status_general.config(text="Foto tomada. Esperando próxima captura...")
+    else:
+        lbl_status_general.config(text="Esperando próxima captura de timelapse...")
     root.after(interval_ms, schedule_next_capture)
 
 # -------------------- INICIALIZACIÓN DE INTERFAZ --------------------
@@ -471,22 +485,55 @@ btn_switch_trans = tk.Button(
 )
 btn_switch_trans.pack(pady=8)
 
-btn_start = tk.Button(
-    button_frame, text="Iniciar Timelapse", command=start_timelapse, width=25, height=2,
+# Botón tipo switch para timelapse
+def toggle_timelapse():
+    if not getattr(toggle_timelapse, "on", False):
+        start_timelapse()
+        btn_switch_timelapse.config(
+            text="Detener Timelapse",
+            bg="#FF5252",
+            fg="#FFFFFF"
+        )
+        toggle_timelapse.on = True
+    else:
+        stop_timelapse()
+        btn_switch_timelapse.config(
+            text="Iniciar Timelapse",
+            bg=BTN_COLOR,
+            fg=BTN_TEXT_COLOR
+        )
+        toggle_timelapse.on = False
+
+toggle_timelapse.on = False
+
+btn_switch_timelapse = tk.Button(
+    button_frame, text="Iniciar Timelapse", command=toggle_timelapse, width=25, height=2,
     bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
     bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
 )
-btn_start.pack(pady=8)
+btn_switch_timelapse.pack(pady=8)
 
-btn_stop = tk.Button(
-    button_frame, text="Detener Timelapse", command=stop_timelapse, width=25, height=2,
-    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
-    bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
-)
-btn_stop.pack(pady=8)
+# Labels de estado
+lbl_status_transmision = tk.Label(button_frame, text="Transmisión: DETENIDA", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11, "bold"))
+lbl_status_transmision.pack(pady=(5, 2))
+lbl_status_timelapse = tk.Label(button_frame, text="Timelapse: DETENIDO", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11, "bold"))
+lbl_status_timelapse.pack(pady=(0, 2))
+lbl_status_general = tk.Label(button_frame, text="Listo", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 10))
+lbl_status_general.pack(pady=(0, 5))
 
-lbl_status = tk.Label(button_frame, text="", bg=BG_COLOR, fg=FG_COLOR)
-lbl_status.pack(pady=5)
+# Reloj digital con zona horaria
+import time
+import tzlocal  # pip install tzlocal
+
+def update_clock():
+    local_timezone = tzlocal.get_localzone()
+    now = datetime.now(local_timezone)
+    lbl_clock.config(text=now.strftime("%H:%M:%S") + f" ({local_timezone})")
+    root.after(1000, update_clock)
+
+lbl_clock = tk.Label(button_frame, text="", bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 13, "bold"))
+lbl_clock.pack(pady=(0, 10))
+update_clock()
 
 # Columna 3: Configuración timelapse
 
@@ -508,13 +555,15 @@ for i, dia in enumerate(dias_lista):
         days_frame,
         text=dia.capitalize(),
         variable=day_vars[i],
-        bg=BG_COLOR,            # Fondo del texto (color corporativo)
-        fg="white",             # Texto negro
-        selectcolor="black",    # Fondo del cuadro marcado blanco
+        bg=BG_COLOR,             # Fondo igual al fondo del programa
+        fg="white",              # Texto blanco
+        selectcolor="black",     # Fondo del cuadro marcado blanco (ticket negro)
         activebackground=BG_COLOR,
-        activeforeground="black",
-        font=("Arial", 11, "bold"),  # Más pequeño y negrita
-        padx=6, pady=2
+        activeforeground="white",
+        font=("Arial", 11, "bold"),
+        padx=6, pady=2,
+        borderwidth=0,
+        highlightthickness=0
     ).pack(anchor="w", pady=1)
 
 tk.Label(config_frame, text="Hora inicio (HH:MM):", bg=BG_COLOR, fg=FG_COLOR).grid(row=3, column=0, sticky="e")
@@ -526,7 +575,6 @@ tk.Label(config_frame, text="Hora fin (HH:MM):", bg=BG_COLOR, fg=FG_COLOR).grid(
 entry_hour_end = tk.Entry(config_frame)
 entry_hour_end.grid(row=4, column=1)
 entry_hour_end.insert(0, "18:00")
-
 
 btn_open_folder = tk.Button(
     config_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, height=2,
