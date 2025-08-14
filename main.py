@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import cv2
+from tkinter import ttk
 
 CONFIG_FILE = "katcam_config.json"
 CAM_INDEX = 0
@@ -441,7 +442,7 @@ main_frame.pack(padx=10, pady=10)
 # Columna 1: Imagen
 image_frame = tk.Frame(main_frame, bg=BG_COLOR)
 image_frame.grid(row=0, column=0, padx=10, pady=10, sticky="n")
-tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 12, "bold"), bg=BG_COLOR, fg=FG_COLOR).pack(pady=5)
+tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=BTN_COLOR).pack(pady=5)
 lbl_main_image = tk.Label(image_frame, bg="gray")
 lbl_main_image.pack(pady=5)
 
@@ -513,6 +514,29 @@ btn_switch_timelapse = tk.Button(
 )
 btn_switch_timelapse.pack(pady=8)
 
+def iniciar_maniobra():
+    try:
+        duracion_min = float(entry_maniobra_duracion.get())
+        intervalo = float(entry_maniobra_intervalo.get())
+        duracion_seg = duracion_min * 60  # Ahora la duración es en minutos
+        fin = datetime.now() + timedelta(seconds=duracion_seg)
+        lbl_status_general.config(text="Maniobra en curso...")
+        while datetime.now() < fin:
+            take_photo(PHOTO_DIR, CAM_INDEX)
+            update_main_image()
+            root.update()
+            time.sleep(intervalo)
+        lbl_status_general.config(text="Maniobra finalizada.")
+    except Exception as e:
+        lbl_status_general.config(text=f"Error en maniobra: {e}")
+
+btn_maniobra = tk.Button(
+    button_frame, text="Iniciar Maniobra", command=iniciar_maniobra, width=25, height=2,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
+    bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
+)
+btn_maniobra.pack(pady=8)
+
 # Labels de estado
 lbl_status_transmision = tk.Label(button_frame, text="Transmisión: DETENIDA", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11, "bold"))
 lbl_status_transmision.pack(pady=(5, 2))
@@ -535,20 +559,44 @@ lbl_clock = tk.Label(button_frame, text="", bg=BG_COLOR, fg=BTN_COLOR, font=("Ar
 lbl_clock.pack(pady=(0, 10))
 update_clock()
 
-# Columna 3: Configuración timelapse
+btn_open_folder = tk.Button(
+    button_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, height=2,
+    bg=BG_COLOR, fg=BTN_COLOR, activebackground=BG_COLOR, activeforeground=BTN_COLOR,
+    bd=2, highlightbackground=BTN_BORDER_COLOR, highlightcolor=BTN_BORDER_COLOR,
+    font=("Arial", 12, "bold"), padx=10, pady=10
+)
+btn_open_folder.pack(pady=10)
 
+# Columna 3: Configuración (ahora con pestañas)
 config_frame = tk.Frame(main_frame, bg=BG_COLOR)
 config_frame.grid(row=0, column=2, padx=10, pady=10, sticky="n")
-tk.Label(config_frame, text="Configuración Timelapse", font=("Arial", 12, "bold"), bg=BG_COLOR, fg=FG_COLOR).grid(row=0, column=0, columnspan=2, pady=5)
-tk.Label(config_frame, text="Frecuencia (minutos):", bg=BG_COLOR, fg=FG_COLOR).grid(row=1, column=0, sticky="e")
-entry_freq = tk.Entry(config_frame)
+
+# Título de la columna de configuraciones
+tk.Label(
+    config_frame,
+    text="Configuraciones",
+    font=("Arial", 16, "bold"),
+    bg=BG_COLOR,
+    fg=BTN_COLOR
+).pack(pady=(0, 10))
+
+notebook = ttk.Notebook(config_frame)
+notebook.pack(fill="both", expand=True)
+
+# --- Pestaña Timelapse ---
+tab_timelapse = tk.Frame(notebook, bg=BG_COLOR)
+notebook.add(tab_timelapse, text="Timelapse")
+
+tk.Label(tab_timelapse, text="Configuración Timelapse", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=FG_COLOR).grid(row=0, column=0, columnspan=2, pady=5)
+tk.Label(tab_timelapse, text="Frecuencia (minutos):", bg=BG_COLOR, fg=FG_COLOR).grid(row=1, column=0, sticky="e")
+entry_freq = tk.Entry(tab_timelapse)
 entry_freq.grid(row=1, column=1)
 entry_freq.insert(0, "10")
 
-tk.Label(config_frame, text="Días a funcionar:", bg=BG_COLOR, fg=FG_COLOR).grid(row=2, column=0, sticky="ne")
+tk.Label(tab_timelapse, text="Días a funcionar:", bg=BG_COLOR, fg=FG_COLOR).grid(row=2, column=0, sticky="ne")
 dias_lista = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 day_vars = [tk.BooleanVar(value=True) for _ in dias_lista]
-days_frame = tk.Frame(config_frame, bg=BG_COLOR)
+days_frame = tk.Frame(tab_timelapse, bg=BG_COLOR)
 days_frame.grid(row=2, column=1, sticky="w")
 for i, dia in enumerate(dias_lista):
     tk.Checkbutton(
@@ -566,23 +614,62 @@ for i, dia in enumerate(dias_lista):
         highlightthickness=0
     ).pack(anchor="w", pady=1)
 
-tk.Label(config_frame, text="Hora inicio (HH:MM):", bg=BG_COLOR, fg=FG_COLOR).grid(row=3, column=0, sticky="e")
-entry_hour_start = tk.Entry(config_frame)
+tk.Label(tab_timelapse, text="Hora inicio (HH:MM):", bg=BG_COLOR, fg=FG_COLOR).grid(row=3, column=0, sticky="e")
+entry_hour_start = tk.Entry(tab_timelapse)
 entry_hour_start.grid(row=3, column=1)
 entry_hour_start.insert(0, "08:00")
 
-tk.Label(config_frame, text="Hora fin (HH:MM):", bg=BG_COLOR, fg=FG_COLOR).grid(row=4, column=0, sticky="e")
-entry_hour_end = tk.Entry(config_frame)
+tk.Label(tab_timelapse, text="Hora fin (HH:MM):", bg=BG_COLOR, fg=FG_COLOR).grid(row=4, column=0, sticky="e")
+entry_hour_end = tk.Entry(tab_timelapse)
 entry_hour_end.grid(row=4, column=1)
 entry_hour_end.insert(0, "18:00")
 
-btn_open_folder = tk.Button(
-    config_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, height=2,
-    bg=BG_COLOR, fg=BTN_COLOR, activebackground=BG_COLOR, activeforeground=BTN_COLOR,
-    bd=2, highlightbackground=BTN_BORDER_COLOR, highlightcolor=BTN_BORDER_COLOR,
-    font=("Arial", 12, "bold"), padx=10, pady=10
-)
-btn_open_folder.grid(row=5, column=0, columnspan=2, pady=15)
+
+
+# --- Pestaña Cámara ---
+tab_camara = tk.Frame(notebook, bg=BG_COLOR)
+notebook.add(tab_camara, text="Cámara")
+
+tk.Label(tab_camara, text="Configuración de Cámara", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=FG_COLOR).pack(pady=10)
+def set_camera_property(prop_id, value):
+    cap = cv2.VideoCapture(CAM_INDEX)
+    cap.set(prop_id, value)
+    cap.release()
+
+def on_slider_change(prop_id, var):
+    set_camera_property(prop_id, var.get())
+
+# Sliders para propiedades comunes de cámara
+cam_props = [
+    ("Brillo", cv2.CAP_PROP_BRIGHTNESS, 0, 255, 128),
+    ("Contraste", cv2.CAP_PROP_CONTRAST, 0, 255, 128),
+    ("Saturación", cv2.CAP_PROP_SATURATION, 0, 255, 128),
+    ("Exposición", cv2.CAP_PROP_EXPOSURE, -8, 0, -4),
+    ("Balance Blancos", cv2.CAP_PROP_WHITE_BALANCE_BLUE_U, 2000, 6500, 4000)
+]
+for i, (label, prop, minv, maxv, default) in enumerate(cam_props):
+    tk.Label(tab_camara, text=label, bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=10)
+    var = tk.DoubleVar(value=default)
+    scale = tk.Scale(tab_camara, from_=minv, to=maxv, orient="horizontal", variable=var,
+                     bg=BG_COLOR, fg=FG_COLOR, troughcolor=BTN_COLOR, highlightthickness=0,
+                     command=lambda v, p=prop, var=var: on_slider_change(p, var))
+    scale.pack(fill="x", padx=10, pady=2)
+
+# --- Pestaña Maniobra ---
+tab_maniobra = tk.Frame(notebook, bg=BG_COLOR)
+notebook.add(tab_maniobra, text="Maniobra")
+
+tk.Label(tab_maniobra, text="Maniobra: Fotos continuas", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=FG_COLOR).pack(pady=10)
+tk.Label(tab_maniobra, text="Duración (minutos):", bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=10)
+entry_maniobra_duracion = tk.Entry(tab_maniobra)
+entry_maniobra_duracion.pack(anchor="w", padx=10, pady=5)
+entry_maniobra_duracion.insert(0, "10")
+
+tk.Label(tab_maniobra, text="Intervalo entre fotos (segundos):", bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=10)
+entry_maniobra_intervalo = tk.Entry(tab_maniobra)
+entry_maniobra_intervalo.pack(anchor="w", padx=10, pady=5)
+entry_maniobra_intervalo.insert(0, "1")
+
 
 # -------------------- INICIALIZACIÓN DE VARIABLES Y ARRANQUE --------------------
 
