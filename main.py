@@ -12,11 +12,51 @@ import cv2
 from tkinter import ttk
 
 import threading
-import queue
 import time
 import tzlocal  # pip install tzlocal
 
+# --- Tamaño fijo de visualización para foto y transmisión ---
+DISPLAY_W = 900
+DISPLAY_H = 600
+
+# info del sistema (opcionales; el código maneja su ausencia)
+def _read_cpu_temp_c():
+    try:
+        import psutil
+        temps = psutil.sensors_temperatures()
+        if temps:
+            for entries in temps.values():
+                if entries:
+                    cur = entries[0].current
+                    if cur is not None:
+                        return float(cur)
+    except Exception:
+        pass
+    return None
+
+def _read_cpu_percent():
+    try:
+        import psutil
+        return psutil.cpu_percent(interval=None)
+    except Exception:
+        return None
+
+def _read_mem_percent():
+    try:
+        import psutil
+        return psutil.virtual_memory().percent
+    except Exception:
+        return None
+
+def _read_free_space_bytes(path):
+    try:
+        usage = shutil.disk_usage(path)
+        return usage.free
+    except Exception:
+        return None
+
 from video_capture import camera_manager
+from camera import take_photo
 
 CONFIG_FILE = "katcam_config.json"
 CAM_INDEX = 0
@@ -28,14 +68,14 @@ BTN_COLOR = "#FFD600"
 BTN_TEXT_COLOR = "#181818"
 BTN_BORDER_COLOR = "#FFD600"
 
-# Estados de alto nivel
+# Estados
 is_capturing = False
 maniobra_running = False
 timelapse_running = False
-streaming = False                # estado global de transmisión
-_want_stream_on_start = False    # reanudar transmisión si estaba activa al guardar
+streaming = False
+_want_stream_on_start = False
 
-# -------------------- UTILIDADES --------------------
+# ---------- Utilidades ----------
 
 def has_write_access(path: str) -> bool:
     try:
@@ -87,7 +127,7 @@ def disable_autostart():
         except Exception:
             pass
 
-# -------------------- CONFIGURACIÓN PERSISTENTE --------------------
+# ---------- Config persistente ----------
 
 def listar_camaras_disponibles(max_cams=8):
     disponibles = []
@@ -121,30 +161,20 @@ def seleccionar_camara():
         messagebox.showinfo("Cámara", f"Cámara seleccionada: {CAM_INDEX}")
     tk.Button(win, text="Seleccionar", command=set_cam, bg=BTN_COLOR, fg=BTN_TEXT_COLOR, font=("Arial", 10, "bold")).pack(pady=10)
 
-# ---- Persistencia de sliders (por cámara) ----
-_cam_sliders = []  # (label, prop, minv, maxv, default, var, scale)
+# Metadatos (cliente/proyecto/id/gps) en config
+_meta_defaults = {
+    "cliente": "",
+    "proyecto": "",
+    "camera_id": "",
+    "gps_lat": "",
+    "gps_lon": ""
+}
 
-def _props_to_dict():
-    d = {}
-    for (_label, prop, _minv, _maxv, _default, var, _scale) in _cam_sliders:
-        d[str(int(prop))] = float(var.get())
-    return d
-
-def _apply_saved_props(prop_map):
-    changed = False
-    for (_label, prop, _minv, _maxv, _default, var, _scale) in _cam_sliders:
-        key = str(int(prop))
-        if key in prop_map:
-            val = prop_map[key]
-            var.set(val)
-            _ensure_prop_worker()
-            try:
-                _prop_queue.put_nowait((prop, val))
-                changed = True
-            except Exception:
-                pass
-    if changed:
-        lbl_status_general.config(text="Parámetros de cámara restaurados del perfil.")
+def _meta_from_config(cfg):
+    m = {}
+    for k in _meta_defaults:
+        m[k] = cfg.get(k, _meta_defaults[k])
+    return m
 
 def guardar_configuracion():
     try:
@@ -152,6 +182,9 @@ def guardar_configuracion():
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 prev = json.load(f)
+        # mantén metadatos existentes
+        meta = _meta_from_config(prev)
+
         config = {
             "frecuencia": entry_freq.get(),
             "dias": [var.get() for var in day_vars],
@@ -163,12 +196,29 @@ def guardar_configuracion():
             "drive_dir": prev.get("drive_dir"),
             "autostart_enabled": bool(is_autostart_enabled()),
             "stream_activo": bool(streaming),
-            "cam_props": _props_to_dict(),
+            # metadatos:
+            "cliente": meta.get("cliente", ""),
+            "proyecto": meta.get("proyecto", ""),
+            "camera_id": meta.get("camera_id", ""),
+            "gps_lat": meta.get("gps_lat", ""),
+            "gps_lon": meta.get("gps_lon", ""),
         }
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
     except Exception as e:
         messagebox.showwarning("Config", f"No se pudo guardar configuración: {e}")
+
+def _save_meta_to_config(new_meta: dict):
+    try:
+        cfg = {}
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        cfg.update(new_meta)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        messagebox.showwarning("Config", f"No se pudo guardar metadatos: {e}")
 
 def cargar_configuracion():
     global CAM_INDEX, PHOTO_DIR, DRIVE_DIR, _want_stream_on_start
@@ -206,10 +256,11 @@ def cargar_configuracion():
     except Exception:
         pass
 
-    # Restaurar sliders si están guardados (después de crear UI)
-    saved_props = config.get("cam_props")
-    if isinstance(saved_props, dict):
-        root.after(600, lambda: _apply_saved_props(saved_props))
+    info_cliente.set(config.get("cliente", ""))
+    info_proyecto.set(config.get("proyecto", ""))
+    info_camera_id.set(config.get("camera_id", ""))
+    info_gps_lat.set(config.get("gps_lat", ""))
+    info_gps_lon.set(config.get("gps_lon", ""))
 
     if config.get("timelapse_activo", False):
         root.after(500, start_timelapse)
@@ -217,7 +268,7 @@ def cargar_configuracion():
     _want_stream_on_start = bool(config.get("stream_activo", False))
     return config
 
-# -------------------- SELECCIÓN DE CARPETAS --------------------
+# ---------- Carpetas ----------
 
 def seleccionar_directorio_manual(titulo):
     carpeta = fd.askdirectory(title=titulo)
@@ -271,6 +322,7 @@ def cambiar_directorio_fotos():
         guardar_configuracion()
         messagebox.showinfo("Ruta actualizada", f"Carpeta de fotos cambiada a:\n{PHOTO_DIR}")
         update_main_image()
+        _refresh_info_tab()
     elif nueva:
         messagebox.showerror("Permisos", "No hay permiso de escritura en la carpeta seleccionada.")
 
@@ -294,7 +346,7 @@ def seleccionar_drive_manual():
     elif carpeta:
         messagebox.showerror("Permisos", "No hay permiso de escritura en la carpeta seleccionada.")
 
-# -------------------- SINCRONIZACIÓN --------------------
+# ---------- Sincronización ----------
 
 def sincronizar_fotos():
     try:
@@ -319,7 +371,7 @@ def sincronizar_fotos():
     except Exception as e:
         lbl_status_general.config(text=f"Error al sincronizar: {e}")
 
-# -------------------- IMAGEN --------------------
+# ---------- Imagen (tamaño fijo) ----------
 
 def get_last_photo():
     if not os.path.exists(PHOTO_DIR):
@@ -329,8 +381,8 @@ def get_last_photo():
         return os.path.join(PHOTO_DIR, fotos[-1])
     return None
 
-def _placeholder_image(size=(600, 500)):
-    img = Image.new("RGB", size, (64, 64, 64))
+def _placeholder_image():
+    img = Image.new("RGB", (DISPLAY_W, DISPLAY_H), (64, 64, 64))
     return img
 
 def update_main_image():
@@ -344,22 +396,17 @@ def update_main_image():
             except Exception:
                 img = _placeholder_image()
 
-        root.update_idletasks()
-        win_width = root.winfo_width()
-        win_height = root.winfo_height()
-        img_width = int(win_width * 0.6)
-        img_height = int(win_height * 0.6)
-        img = ImageOps.contain(img, (img_width, img_height))
+        img = ImageOps.contain(img, (DISPLAY_W, DISPLAY_H))
         photo = ImageTk.PhotoImage(img)
-        lbl_main_image.config(image=photo)
+        lbl_main_image.config(image=photo, width=DISPLAY_W, height=DISPLAY_H)
         lbl_main_image.image = photo
     except Exception as e:
         lbl_status_general.config(text=f"Error mostrando imagen: {e}")
 
 def update_stream_image(img):
-    img = ImageOps.contain(img, (600, 500))
+    img = ImageOps.contain(img, (DISPLAY_W, DISPLAY_H))
     photo = ImageTk.PhotoImage(img)
-    lbl_main_image.config(image=photo)
+    lbl_main_image.config(image=photo, width=DISPLAY_W, height=DISPLAY_H)
     lbl_main_image.image = photo
 
 def abrir_carpeta_fotos():
@@ -371,7 +418,7 @@ def abrir_carpeta_fotos():
     else:
         subprocess.Popen(["xdg-open", path])
 
-# -------------------- STREAM: helpers y estado único --------------------
+# ---------- STREAM helpers ----------
 
 ui_refresh_ms = 40  # ~25 fps
 
@@ -386,7 +433,6 @@ def _tick_stream():
         root.after(ui_refresh_ms, _tick_stream)
 
 def update_stream_ui():
-    """Refresca botón + label según el flag global `streaming`."""
     if streaming:
         lbl_status_transmision.config(text="Transmisión: ACTIVA")
         btn_switch_trans.config(text="Detener transmisión", bg="#FF5252", fg="#FFFFFF")
@@ -397,7 +443,6 @@ def update_stream_ui():
         toggle_transmision.on = False
 
 def stream_on():
-    """Enciende transmisión, sincroniza UI y arranca el loop de refresco."""
     global streaming
     if streaming:
         return
@@ -408,7 +453,6 @@ def stream_on():
     _tick_stream()
 
 def stream_off():
-    """Apaga transmisión, sincroniza UI y muestra la última foto."""
     global streaming
     if not streaming:
         return
@@ -436,7 +480,7 @@ def toggle_transmision():
     else:
         mostrar_transmision()
 
-# -------------------- FOTO (coordina stream/timelapse) --------------------
+# ---------- FOTO ----------
 
 def take_and_update():
     global is_capturing
@@ -456,8 +500,7 @@ def take_and_update():
             if was_streaming and not timelapse_running:
                 root.after(0, stream_off)
                 time.sleep(0.08)
-
-            camera_manager.take_photo(
+            take_photo(
                 dest_folder=PHOTO_DIR,
                 prefer_sizes=None,
                 jpeg_quality=95,
@@ -473,10 +516,9 @@ def take_and_update():
                 global is_capturing
                 lbl_status_general.config(text=msg)
                 update_main_image()
-
+                _refresh_info_tab()
                 if was_streaming:
                     if timelapse_running:
-                        # Asegura que el loop/UI estén activos
                         if not streaming:
                             stream_on()
                         else:
@@ -484,13 +526,12 @@ def take_and_update():
                             _tick_stream()
                     else:
                         stream_on()
-
                 is_capturing = False
             root.after(0, _finish)
 
     threading.Thread(target=_work, daemon=True).start()
 
-# -------------------- TIMELAPSE --------------------
+# ---------- TIMELAPSE ----------
 
 next_capture_time = None
 interval_ms = 600000
@@ -560,80 +601,18 @@ def schedule_next_capture():
         lbl_status_general.config(text="Esperando próxima captura de timelapse...")
     root.after(interval_ms, schedule_next_capture)
 
-# -------------------- SLIDERS + Reset balanceado + Driver dialog --------------------
+# ---------- Autoajuste de cámara (un solo botón) ----------
 
-_prop_queue = queue.Queue()
-_prop_worker_started = False
-
-def _prop_worker():
-    pending = {}
-    last_apply = 0.0
-    while True:
-        try:
-            pid, val = _prop_queue.get(timeout=0.1)
-            pending[pid] = val
-        except queue.Empty:
-            pass
-        now = time.time()
-        if pending and (now - last_apply) >= 0.3:
-            if not is_capturing and not maniobra_running:
-                for pid, val in list(pending.items()):
-                    camera_manager.set_property(pid, val)
-                pending.clear()
-                last_apply = now
-
-def _ensure_prop_worker():
-    global _prop_worker_started
-    if not _prop_worker_started:
-        t = threading.Thread(target=_prop_worker, daemon=True)
-        t.start()
-        _prop_worker_started = True
-
-def on_slider_change(prop_id, var):
-    _ensure_prop_worker()
-    try:
-        _prop_queue.put_nowait((prop_id, var.get()))
-    except Exception:
-        pass
-
-def reset_camera_settings():
-    # balanceado (medios) + auto expo/WB
-    defaults = {
-        cv2.CAP_PROP_BRIGHTNESS: 128,
-        cv2.CAP_PROP_CONTRAST:   128,
-        cv2.CAP_PROP_SATURATION: 128,
-    }
-    for (_label, prop, _minv, _maxv, _default, var, _scale) in _cam_sliders:
-        if prop in defaults:
-            var.set(defaults[prop])
-
+def camera_autoadjust():
+    """
+    Botón único de autoajuste:
+      - Activa modos automáticos de exposición y balance de blancos (si el driver lo soporta).
+      - No apaga/enciende stream ni cambia resolución → evita saltos.
+    """
     camera_manager.set_auto_modes(enable_exposure_auto=True, enable_wb_auto=True)
+    lbl_status_general.config(text="Autoajuste aplicado (expo/WB automáticos).")
 
-    _ensure_prop_worker()
-    for pid, val in defaults.items():
-        try:
-            _prop_queue.put_nowait((pid, val))
-        except Exception:
-            pass
-
-    lbl_status_general.config(text="Cámara balanceada (medios + auto expo/WB).")
-
-def reset_driver_dialog():
-    was_streaming = streaming
-    if was_streaming:
-        stream_off()
-        root.update()
-        time.sleep(0.05)
-    camera_manager.show_driver_settings()
-    if was_streaming:
-        stream_on()
-    lbl_status_general.config(text="Abierto diálogo del controlador; usa 'Default' y cierra.")
-
-def set_camera_auto_modes():
-    camera_manager.set_auto_modes(enable_exposure_auto=True, enable_wb_auto=True)
-    lbl_status_general.config(text="Cámara en modos automáticos (expo/WB).")
-
-# -------------------- UI --------------------
+# ---------- UI ----------
 
 root = tk.Tk()
 root.title("Katcam Pro")
@@ -651,7 +630,7 @@ y = (screen_height - win_height) // 2
 root.geometry(f"{win_width}x{win_height}+{x}+{y}")
 root.resizable(True, True)
 
-# --- Menú superior ---
+# Menú
 menubar = tk.Menu(root, bg=BG_COLOR, fg=FG_COLOR)
 root.config(menu=menubar)
 
@@ -662,7 +641,6 @@ carpeta_menu.add_command(label="Cambiar carpeta de Google Drive...", command=sel
 carpeta_menu.add_separator()
 carpeta_menu.add_command(label="Seleccionar cámara...", command=seleccionar_camara)
 
-# Ventana de ajustes de inicio con Windows
 def open_autostart_window():
     win = tk.Toplevel(root)
     win.title("Inicio con Windows")
@@ -671,12 +649,9 @@ def open_autostart_window():
     info = tk.Label(win, text="Configura si Katcam Pro se inicia automáticamente con Windows.",
                     bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11))
     info.pack(padx=12, pady=(12, 4))
-
     status_lbl = tk.Label(win, text="", bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 11, "bold"))
     status_lbl.pack(pady=(0, 8))
-
     autostart_var = tk.IntVar(value=1 if is_autostart_enabled() else 0)
-
     def on_toggle():
         try:
             if autostart_var.get():
@@ -690,18 +665,14 @@ def open_autostart_window():
             guardar_configuracion()
         except Exception as e:
             lbl_status_general.config(text=f"Autostart error: {e}")
-
     chk = tk.Checkbutton(
         win, text="Iniciar Katcam Pro con Windows",
-        variable=autostart_var, onvalue=1, offvalue=0,
-        command=on_toggle,
+        variable=autostart_var, onvalue=1, offvalue=0, command=on_toggle,
         bg=BG_COLOR, fg=FG_COLOR, selectcolor="black",
         activebackground=BG_COLOR, activeforeground=FG_COLOR,
         font=("Arial", 12, "bold")
     )
     chk.pack(padx=12, pady=8)
-
-    # Estado inicial
     status_lbl.config(text="Estado: ACTIVADO" if autostart_var.get() else "Estado: DESACTIVADO")
 
 ajustes_menu = tk.Menu(menubar, tearoff=0, bg=BG_COLOR, fg=FG_COLOR)
@@ -721,11 +692,11 @@ except Exception:
 main_frame = tk.Frame(root, bg=BG_COLOR)
 main_frame.pack(padx=10, pady=10)
 
-# Columna 1: Imagen
+# Columna 1: Imagen (fija)
 image_frame = tk.Frame(main_frame, bg=BG_COLOR)
 image_frame.grid(row=0, column=0, padx=10, pady=10, sticky="n")
 tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=BTN_COLOR).pack(pady=5)
-lbl_main_image = tk.Label(image_frame, bg="gray")
+lbl_main_image = tk.Label(image_frame, bg="gray", width=DISPLAY_W, height=DISPLAY_H)
 lbl_main_image.pack(pady=5)
 
 # Columna 2: Botones
@@ -740,21 +711,14 @@ btn_take = tk.Button(
 )
 btn_take.pack(pady=8)
 
-def toggle_transmision():
-    if streaming:
-        stream_off()
-    else:
-        mostrar_transmision()
-
 btn_switch_trans = tk.Button(
     button_frame, text="Iniciar transmisión", command=toggle_transmision, width=25, height=2,
     bg=BTN_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
     bd=0, font=("Arial", 12, "bold"), padx=10, pady=10
 )
 btn_switch_trans.pack(pady=8)
-toggle_transmision.on = False  # sólo informativo; lo mantiene update_stream_ui()
+toggle_transmision.on = False
 
-# Toggle timelapse
 def toggle_timelapse():
     if not getattr(toggle_timelapse, "on", False):
         start_timelapse()
@@ -774,7 +738,6 @@ btn_switch_timelapse = tk.Button(
 )
 btn_switch_timelapse.pack(pady=8)
 
-# Toggle maniobra
 def toggle_maniobra():
     global maniobra_running
     if not getattr(toggle_maniobra, "on", False):
@@ -784,13 +747,11 @@ def toggle_maniobra():
         except Exception as e:
             lbl_status_general.config(text=f"Error en maniobra: {e}")
             return
-
         fin = datetime.now() + timedelta(seconds=duracion_min * 60)
         maniobra_running = True
         lbl_status_general.config(text="Maniobra en curso...")
         if streaming:
             stream_off()
-
         def _tick():
             global maniobra_running
             if datetime.now() >= fin or not maniobra_running:
@@ -800,16 +761,15 @@ def toggle_maniobra():
                 toggle_maniobra.on = False
                 return
             threading.Thread(
-                target=lambda: camera_manager.take_photo(PHOTO_DIR, block_until_done=True, auto_resume_stream=False),
+                target=lambda: take_photo(PHOTO_DIR, block_until_done=True, auto_resume_stream=False),
                 daemon=True
             ).start()
             update_main_image()
+            _refresh_info_tab()
             root.after(int(float(intervalo) * 1000), _tick)
-
         _tick()
         btn_maniobra.config(text="Detener Maniobra", bg="#FF5252", fg="#FFFFFF")
         toggle_maniobra.on = True
-
     else:
         maniobra_running = False
         lbl_status_general.config(text="Maniobra cancelada por el usuario.")
@@ -825,7 +785,7 @@ btn_maniobra = tk.Button(
 )
 btn_maniobra.pack(pady=8)
 
-# Labels de estado
+# Estados
 lbl_status_transmision = tk.Label(button_frame, text="Transmisión: DETENIDA", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11, "bold"))
 lbl_status_transmision.pack(pady=(5, 2))
 lbl_status_timelapse = tk.Label(button_frame, text="Timelapse: DETENIDO", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11, "bold"))
@@ -860,7 +820,7 @@ tk.Label(config_frame, text="Configuraciones", font=("Arial", 16, "bold"), bg=BG
 notebook = ttk.Notebook(config_frame)
 notebook.pack(fill="both", expand=True)
 
-# --- Pestaña Timelapse ---
+# 1) Timelapse
 tab_timelapse = tk.Frame(notebook, bg=BG_COLOR)
 notebook.add(tab_timelapse, text="Timelapse")
 
@@ -893,50 +853,7 @@ entry_hour_end = tk.Entry(tab_timelapse)
 entry_hour_end.grid(row=4, column=1)
 entry_hour_end.insert(0, "18:00")
 
-# --- Pestaña Cámara ---
-tab_camara = tk.Frame(notebook, bg=BG_COLOR)
-notebook.add(tab_camara, text="Cámara")
-
-tk.Label(tab_camara, text="Configuración de Cámara", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=FG_COLOR).pack(pady=10)
-
-cam_props = [
-    ("Brillo", cv2.CAP_PROP_BRIGHTNESS, 0, 255, 128),
-    ("Contraste", cv2.CAP_PROP_CONTRAST, 0, 255, 128),
-    ("Saturación", cv2.CAP_PROP_SATURATION, 0, 255, 128),
-    ("Exposición", cv2.CAP_PROP_EXPOSURE, -8, 0, -4),
-    ("Balance Blancos", cv2.CAP_PROP_WHITE_BALANCE_BLUE_U, 2000, 6500, 4000),
-]
-for (label, prop, minv, maxv, default) in cam_props:
-    tk.Label(tab_camara, text=label, bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=10)
-    var = tk.DoubleVar(value=default)
-    scale = tk.Scale(
-        tab_camara, from_=minv, to=maxv, orient="horizontal", variable=var,
-        bg=BG_COLOR, fg=FG_COLOR, troughcolor=BTN_COLOR, highlightthickness=0,
-        command=lambda v, p=prop, var=var: on_slider_change(p, var)
-    )
-    scale.pack(fill="x", padx=10, pady=2)
-    _cam_sliders.append((label, prop, minv, maxv, default, var, scale))
-
-btn_reset_cam = tk.Button(
-    tab_camara, text="Reset cámara (balanceado)", command=reset_camera_settings,
-    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0, font=("Arial", 11, "bold"),
-    padx=10, pady=8
-)
-btn_reset_cam.pack(pady=6, padx=10, anchor="e")
-
-btn_auto_modes = tk.Button(
-    tab_camara, text="Auto (expo/WB)", command=set_camera_auto_modes,
-    bg="#9CCC65", fg="#181818", bd=0, font=("Arial", 11, "bold"), padx=10, pady=8
-)
-btn_auto_modes.pack(pady=6, padx=10, anchor="e")
-
-btn_reset_driver = tk.Button(
-    tab_camara, text="Reset (valores del controlador)", command=reset_driver_dialog,
-    bg="#FFB300", fg="#181818", bd=0, font=("Arial", 11, "bold"), padx=10, pady=8
-)
-btn_reset_driver.pack(pady=6, padx=10, anchor="e")
-
-# --- Pestaña Maniobra ---
+# 2) Maniobra
 tab_maniobra = tk.Frame(notebook, bg=BG_COLOR)
 notebook.add(tab_maniobra, text="Maniobra")
 
@@ -945,30 +862,186 @@ tk.Label(tab_maniobra, text="Duración (minutos):", bg=BG_COLOR, fg=FG_COLOR).pa
 entry_maniobra_duracion = tk.Entry(tab_maniobra)
 entry_maniobra_duracion.pack(anchor="w", padx=10, pady=5)
 entry_maniobra_duracion.insert(0, "10")
-
 tk.Label(tab_maniobra, text="Intervalo entre fotos (segundos):", bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=10)
 entry_maniobra_intervalo = tk.Entry(tab_maniobra)
 entry_maniobra_intervalo.pack(anchor="w", padx=10, pady=5)
 entry_maniobra_intervalo.insert(0, "1")
 
-# -------------------- INICIALIZACIÓN --------------------
+# 3) Cámara (solo botón de autoajuste)
+tab_camara = tk.Frame(notebook, bg=BG_COLOR)
+notebook.add(tab_camara, text="Cámara")
 
-# 1) Directorios
+tk.Label(tab_camara, text="Ajustes de Cámara", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=FG_COLOR).pack(pady=10)
+tk.Label(tab_camara, text="Usa Autoajuste para que el driver optimice exposición y balance de blancos.", bg=BG_COLOR, fg=FG_COLOR).pack(pady=(0,8))
+btn_autoadj = tk.Button(
+    tab_camara, text="Autoajuste (recomendado)", command=camera_autoadjust,
+    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0, font=("Arial", 12, "bold"), padx=12, pady=10
+)
+btn_autoadj.pack(padx=10, pady=10, anchor="center")
+
+btn_ctrl_dialog = tk.Button(
+    tab_camara, text="Ajustes avanzados del controlador…", command=camera_manager.show_driver_settings,
+    bg="#FFB300", fg="#181818", bd=0, font=("Arial", 11, "bold"), padx=10, pady=8
+)
+btn_ctrl_dialog.pack(pady=6, padx=10, anchor="center")
+
+# 4) Info (Cliente/Proyecto/ID/GPS + conteo fotos + mapa futuro)
+tab_info = tk.Frame(notebook, bg=BG_COLOR)
+notebook.add(tab_info, text="Info")
+
+info_cliente = tk.StringVar(value="")
+info_proyecto = tk.StringVar(value="")
+info_camera_id = tk.StringVar(value="")
+info_gps_lat = tk.StringVar(value="")
+info_gps_lon = tk.StringVar(value="")
+info_fotos = tk.StringVar(value="0")
+info_ultima = tk.StringVar(value="—")
+
+def _count_photos_and_last():
+    if not os.path.exists(PHOTO_DIR):
+        return 0, "—"
+    files = sorted([f for f in os.listdir(PHOTO_DIR) if f.lower().endswith((".jpg",".jpeg",".png"))])
+    if not files:
+        return 0, "—"
+    last_path = os.path.join(PHOTO_DIR, files[-1])
+    try:
+        ts = datetime.fromtimestamp(os.path.getmtime(last_path)).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        ts = "—"
+    return len(files), ts
+
+def _refresh_info_tab():
+    total, last_ts = _count_photos_and_last()
+    info_fotos.set(str(total))
+    info_ultima.set(last_ts)
+
+def _open_edit_meta():
+    win = tk.Toplevel(root)
+    win.title("Editar información")
+    win.configure(bg=BG_COLOR)
+    win.geometry("420x300")
+    def row(lbl, var, r):
+        tk.Label(win, text=lbl, bg=BG_COLOR, fg=FG_COLOR).grid(row=r, column=0, sticky="e", padx=8, pady=6)
+        ent = tk.Entry(win, textvariable=var, width=28)
+        ent.grid(row=r, column=1, sticky="w", padx=8, pady=6)
+    row("Cliente:", info_cliente, 0)
+    row("Proyecto:", info_proyecto, 1)
+    row("ID Cámara:", info_camera_id, 2)
+    row("GPS Lat:", info_gps_lat, 3)
+    row("GPS Lon:", info_gps_lon, 4)
+
+    def save_meta():
+        meta = {
+            "cliente": info_cliente.get(),
+            "proyecto": info_proyecto.get(),
+            "camera_id": info_camera_id.get(),
+            "gps_lat": info_gps_lat.get(),
+            "gps_lon": info_gps_lon.get(),
+        }
+        _save_meta_to_config(meta)
+        lbl_status_general.config(text="Información guardada.")
+        win.destroy()
+
+    btn = tk.Button(win, text="Guardar", command=save_meta,
+                    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0, font=("Arial", 11, "bold"), padx=10, pady=8)
+    btn.grid(row=5, column=0, columnspan=2, pady=12)
+
+tk.Label(tab_info, text="Información de la instalación", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=FG_COLOR).grid(row=0, column=0, columnspan=2, pady=(10, 6))
+
+tk.Label(tab_info, text="Cliente:", bg=BG_COLOR, fg=FG_COLOR).grid(row=1, column=0, sticky="e", padx=8, pady=4)
+tk.Label(tab_info, textvariable=info_cliente, bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 11, "bold")).grid(row=1, column=1, sticky="w", padx=8, pady=4)
+
+tk.Label(tab_info, text="Proyecto:", bg=BG_COLOR, fg=FG_COLOR).grid(row=2, column=0, sticky="e", padx=8, pady=4)
+tk.Label(tab_info, textvariable=info_proyecto, bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 11, "bold")).grid(row=2, column=1, sticky="w", padx=8, pady=4)
+
+tk.Label(tab_info, text="ID Cámara:", bg=BG_COLOR, fg=FG_COLOR).grid(row=3, column=0, sticky="e", padx=8, pady=4)
+tk.Label(tab_info, textvariable=info_camera_id, bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 11, "bold")).grid(row=3, column=1, sticky="w", padx=8, pady=4)
+
+tk.Label(tab_info, text="GPS (lat, lon):", bg=BG_COLOR, fg=FG_COLOR).grid(row=4, column=0, sticky="e", padx=8, pady=4)
+tk.Label(tab_info, textvariable=info_gps_lat, bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 11, "bold")).grid(row=4, column=1, sticky="w", padx=8, pady=4)
+tk.Label(tab_info, textvariable=info_gps_lon, bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 11, "bold")).grid(row=5, column=1, sticky="w", padx=8, pady=0)
+
+tk.Label(tab_info, text="Fotos totales:", bg=BG_COLOR, fg=FG_COLOR).grid(row=6, column=0, sticky="e", padx=8, pady=4)
+tk.Label(tab_info, textvariable=info_fotos, bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 11, "bold")).grid(row=6, column=1, sticky="w", padx=8, pady=4)
+
+tk.Label(tab_info, text="Última foto:", bg=BG_COLOR, fg=FG_COLOR).grid(row=7, column=0, sticky="e", padx=8, pady=4)
+tk.Label(tab_info, textvariable=info_ultima, bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 11, "bold")).grid(row=7, column=1, sticky="w", padx=8, pady=4)
+
+btn_edit_meta = tk.Button(tab_info, text="Editar…", command=_open_edit_meta,
+                          bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0, font=("Arial", 11, "bold"), padx=10, pady=6)
+btn_edit_meta.grid(row=8, column=0, columnspan=2, pady=(8, 12))
+
+map_frame = tk.LabelFrame(tab_info, text="Mapa (futuro)", bg=BG_COLOR, fg=FG_COLOR, bd=2, labelanchor="n", font=("Arial", 11, "bold"))
+map_frame.grid(row=9, column=0, columnspan=2, padx=8, pady=(4, 10), sticky="we")
+tk.Label(map_frame, text="Aquí mostraremos un mapa cuando integremos GPS.", bg=BG_COLOR, fg=FG_COLOR).pack(padx=8, pady=8)
+
+# 5) Sistema (nueva pestaña)
+tab_sistema = tk.Frame(notebook, bg=BG_COLOR)
+notebook.add(tab_sistema, text="Sistema")
+
+lbl_temp = tk.Label(tab_sistema, text="Temp: —", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11))
+lbl_temp.pack(anchor="w", padx=12, pady=(10,4))
+lbl_cpu = tk.Label(tab_sistema, text="CPU: —", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11))
+lbl_cpu.pack(anchor="w", padx=12, pady=4)
+lbl_ram = tk.Label(tab_sistema, text="RAM: —", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11))
+lbl_ram.pack(anchor="w", padx=12, pady=4)
+lbl_disk = tk.Label(tab_sistema, text="Libre en fotos: —", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11))
+lbl_disk.pack(anchor="w", padx=12, pady=4)
+start_time = time.time()
+lbl_uptime = tk.Label(tab_sistema, text="Uptime: 00:00:00", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11))
+lbl_uptime.pack(anchor="w", padx=12, pady=(4,10))
+
+def _fmt_bytes(b):
+    if b is None:
+        return "—"
+    for unit in ["B","KB","MB","GB","TB"]:
+        if b < 1024:
+            return f"{b:.0f} {unit}"
+        b /= 1024
+    return f"{b:.0f} PB"
+
+def _fmt_pct(p):
+    return "—" if p is None else f"{p:.0f}%"
+
+def _fmt_temp(t):
+    return "—" if t is None else f"{t:.1f}°C"
+
+def update_system_info():
+    try:
+        t = _read_cpu_temp_c()
+        cpu = _read_cpu_percent()
+        ram = _read_mem_percent()
+        free = _read_free_space_bytes(PHOTO_DIR)
+        up = int(time.time() - start_time)
+        h, rem = divmod(up, 3600)
+        m, s = divmod(rem, 60)
+        lbl_temp.config(text=f"Temp: {_fmt_temp(t)}")
+        lbl_cpu.config(text=f"CPU: {_fmt_pct(cpu)}")
+        lbl_ram.config(text=f"RAM: {_fmt_pct(ram)}")
+        lbl_disk.config(text=f"Libre en fotos: {_fmt_bytes(free)}")
+        lbl_uptime.config(text=f"Uptime: {h:02d}:{m:02d}:{s:02d}")
+    except Exception:
+        pass
+    finally:
+        root.after(2000, update_system_info)
+
+update_system_info()
+
+# ---------- Inicialización ----------
+
 PHOTO_DIR = inicializar_directorio_fotos()
 DRIVE_DIR = inicializar_directorio_drive()
 
-# 2) Construimos UI y luego cargamos config (para poder aplicar sliders)
-update_stream_ui()  # arranca consistente: "Iniciar transmisión" / "Detenida"
+update_stream_ui()
 cargar_configuracion()
 update_main_image()
+_refresh_info_tab()
 
-# Si estaba activa la transmisión antes de salir, reanudar
 def _resume_stream_if_needed():
     if _want_stream_on_start:
         stream_on()
 root.after(800, _resume_stream_if_needed)
 
-# 3) Sincronización automática
 def sync_auto():
     sincronizar_fotos()
     root.after(60000, sync_auto)
@@ -984,14 +1057,7 @@ def on_close():
 
 root.protocol("WM_DELETE_WINDOW", on_close)
 
-resize_job = None
-def on_resize(event):
-    global resize_job
-    if resize_job is not None:
-        root.after_cancel(resize_job)
-    resize_job = root.after(300, update_main_image)
-
-root.bind("<Configure>", on_resize)
+# ya no redimensionamos la imagen por tamaño de ventana; es fija.
 
 sync_auto()
 root.mainloop()

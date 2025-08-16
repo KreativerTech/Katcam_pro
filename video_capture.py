@@ -6,24 +6,24 @@ import queue
 import os
 from datetime import datetime
 
-# Resoluciones preferidas para captura de alta calidad (ajusta según tu sensor)
+# Resoluciones objetivo para captura (ajusta a tu sensor/driver)
 _PREFERRED_SIZES = [
     (4056, 3040),   # ~12MP
     (3840, 2160),   # 4K
-    (3264, 2448),   # 8MP
-    (2592, 1944),   # 5MP
+    (3264, 2448),   # ~8MP
+    (2592, 1944),   # ~5MP
     (1920, 1080),   # 1080p
     (1280, 720),    # 720p
 ]
 
 class CameraManager:
     """
-    Único dueño del dispositivo de cámara.
-    - Hilo interno que procesa comandos (stream on/off, props, captura).
-    - Preview fluido; captura a alta resolución y luego restaura preview.
-    - Pausa/reanuda internamente durante timelapse/captura cuando se le indica.
+    Dueño único del dispositivo:
+      - Hilo que procesa comandos (stream on/off, props y captura).
+      - Preview fluido; captura alta resolución y restaura preview.
+      - Pausa/reanuda internamente durante timelapse/captura.
     """
-    def __init__(self, cam_index=0, backend="dshow", preview_size=(1280,720), fps=30, use_mjpg=True):
+    def __init__(self, cam_index=0, backend="dshow", preview_size=(1280, 720), fps=30, use_mjpg=True):
         self.cam_index = cam_index
         self.backend = cv2.CAP_DSHOW if backend == "dshow" else cv2.CAP_MSMF
         self.preview_w, self.preview_h = preview_size
@@ -39,13 +39,13 @@ class CameraManager:
         self._last_frame = None
 
         self._cmd_q = queue.Queue()
-        self._prop_pending = {}   # pid -> value para coalescer
+        self._prop_pending = {}   # pid -> value (coalesce)
 
         self._worker = threading.Thread(target=self._loop, daemon=True)
         self._running = True
         self._worker.start()
 
-    # -------------- API pública --------------
+    # ---------- API pública ----------
     def set_cam_index(self, index: int):
         self._cmd_q.put(("set_cam_index", int(index)))
 
@@ -73,7 +73,7 @@ class CameraManager:
             done.wait()
 
     def set_property(self, prop_id, value):
-        """Encola cambios de propiedad; el worker los aplica en lotes (debounce)."""
+        """Encola cambios de propiedad; el worker los aplica con debounce."""
         self._cmd_q.put(("set_prop", (prop_id, float(value))))
 
     def get_frame_rgb(self):
@@ -92,9 +92,9 @@ class CameraManager:
                 self._cap.release()
                 self._cap = None
 
-    # ---- Extras: reset/controlador/auto-modos ----
+    # ---- Extras: diálogo del controlador y modos auto ----
     def show_driver_settings(self):
-        """Abre el diálogo nativo del driver (sólo Windows/DirectShow)."""
+        """Abre el diálogo nativo del driver (Windows/DirectShow)."""
         with self._lock:
             if self._cap is None:
                 self._open_for_preview_locked()
@@ -104,16 +104,13 @@ class CameraManager:
                 pass
 
     def set_auto_modes(self, enable_exposure_auto=True, enable_wb_auto=True):
-        """
-        'Semi-reset' hacia modos automáticos (si el driver lo soporta).
-        No equivale a 'valores de fábrica', pero normaliza rápido.
-        """
+        """Activa modos automáticos (si el driver lo soporta)."""
         with self._lock:
             if self._cap is None:
                 self._open_for_preview_locked()
             try:
-                # Convenciones típicas en DShow con OpenCV:
-                # CAP_PROP_AUTO_EXPOSURE: 0.25=manual, 0.75=auto (varía según build)
+                # Convención típica con DShow (puede variar por build/driver)
+                # 0.25 = manual, 0.75 = auto
                 if enable_exposure_auto:
                     self._cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
                 if enable_wb_auto:
@@ -121,7 +118,7 @@ class CameraManager:
             except Exception:
                 pass
 
-    # -------------- Internos --------------
+    # ---------- Internos ----------
     def _loop(self):
         last_prop_apply = 0.0
         while self._running:
@@ -217,7 +214,7 @@ class CameraManager:
         done_evt      = args["done_evt"]
 
         was_streaming = self._stream_enabled
-        self._stream_enabled = False  # pausa el loop de lectura
+        self._stream_enabled = False  # pausa el loop
 
         with self._lock:
             if self._cap is None:
@@ -238,9 +235,9 @@ class CameraManager:
                 filename = datetime.now().strftime("%Y%m%d_%H%M%S") + ".jpg"
                 path = os.path.join(dest_folder, filename)
                 cv2.imwrite(path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
-                print("Foto guardada en:", path)
+                # sin prints; la UI informará
             else:
-                print("Error al capturar imagen")
+                pass
 
             if auto_resume and was_streaming:
                 self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.preview_w)
@@ -254,5 +251,5 @@ class CameraManager:
             done_evt.set()
 
 
-# Singleton para importar desde main.py
+# Singleton importable
 camera_manager = CameraManager()
