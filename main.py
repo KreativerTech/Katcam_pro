@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
 from tkinter import filedialog as fd
-from PIL import Image, ImageTk, ImageOps, Image
+from PIL import Image, ImageTk, ImageOps
 import os
 from datetime import datetime, timedelta
 import json
@@ -14,10 +14,15 @@ from tkinter import ttk
 import threading
 import time
 import tzlocal  # pip install tzlocal
+from typing import Optional, Tuple
 
-# --- Tamaño fijo de visualización para foto y transmisión ---
-DISPLAY_W = 900
-DISPLAY_H = 600
+# --- Tamaño recomendado / mínimos ---
+MIN_APP_W, MIN_APP_H = 1000, 700
+IMG_MIN_W, IMG_MIN_H = 900, 600       # área de imagen "objetivo"
+RESIZE_DEBOUNCE_MS = 120              # para suavizar el re-render en resize
+
+# Si pones True, envuelve el layout en un contenedor con scroll (útil en pantallas pequeñas).
+USE_SCROLL_CONTAINER = False
 
 # info del sistema (opcionales; el código maneja su ausencia)
 def _read_cpu_temp_c():
@@ -75,8 +80,89 @@ timelapse_running = False
 streaming = False
 _want_stream_on_start = False
 
-# ---------- Utilidades ----------
+# --- Lista de resoluciones ofrecidas (texto, w, h) ---
+RESOLUTIONS = [
+    ("3840 x 2160 (4K)", 3840, 2160),
+    ("2560 x 1440 (QHD)", 2560, 1440),
+    ("1920 x 1080 (FHD)", 1920, 1080),
+    ("1600 x 1200 (UXGA)", 1600, 1200),
+    ("1280 x 720 (HD)",   1280, 720),
+    ("1024 x 768 (XGA)",  1024, 768),
+    ("800 x 600 (SVGA)",   800, 600),
+    ("640 x 480 (VGA)",    640, 480),
+]
+current_resolution_label = "1920 x 1080 (FHD)"  # default UI
 
+# ---------- Panel de imagen sin “saltos” + reescalado suave ----------
+class ImagePanel(tk.Frame):
+    """Canvas que muestra una imagen redimensionada sin alterar el layout."""
+    def __init__(self, parent, bg=BG_COLOR, min_size=(IMG_MIN_W, IMG_MIN_H)):
+        super().__init__(parent, bg=bg)
+        self.bg = bg
+        self.min_w, self.min_h = min_size
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, borderwidth=0)
+        self.canvas.pack(fill="both", expand=True)
+        # Reserva tamaño mínimo inicial para evitar “saltos”
+        self.update_idletasks()
+        self.canvas.config(width=self.min_w, height=self.min_h)
+
+        self._last_pil = None
+        self._tk_img = None
+        self._resize_job = None
+        self.bind("<Configure>", self._on_resize)
+
+    def set_image(self, pil_img: Image.Image):
+        """Recibe PIL.Image (foto o frame) y la guarda como fuente de verdad."""
+        self._last_pil = pil_img
+        self._render()
+
+    def _on_resize(self, _evt=None):
+        if self._resize_job:
+            self.after_cancel(self._resize_job)
+        self._resize_job = self.after(RESIZE_DEBOUNCE_MS, self._render)
+
+    def _render(self):
+        # placeholder estable si no hay imagen
+        if self._last_pil is None:
+            ph = Image.new("RGB", (self.min_w, self.min_h), (40, 40, 40))
+            self._draw(ph)
+            return
+
+        # tamaño disponible del canvas, nunca por debajo del mínimo
+        cw = max(self.canvas.winfo_width(), self.min_w)
+        ch = max(self.canvas.winfo_height(), self.min_h)
+
+        # Contener manteniendo aspecto
+        shown = ImageOps.contain(self._last_pil, (cw, ch))
+        self._draw(shown)
+
+    def _draw(self, pil_img):
+        self._tk_img = ImageTk.PhotoImage(pil_img)
+        self.canvas.delete("all")
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        # centra siempre
+        self.canvas.create_image(cw // 2, ch // 2, image=self._tk_img, anchor="center")
+
+
+class ScrollableFrame(tk.Frame):
+    """Contenedor con scroll vertical para pantallas pequeñas."""
+    def __init__(self, parent, bg=BG_COLOR):
+        super().__init__(parent, bg=bg)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, borderwidth=0)
+        self.vsb = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.inner = tk.Frame(self.canvas, bg=bg)
+
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(
+            scrollregion=self.canvas.bbox("all")))
+        self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.vsb.set)
+
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.vsb.pack(side="right", fill="y")
+
+
+# ---------- Utilidades ----------
 def has_write_access(path: str) -> bool:
     try:
         os.makedirs(path, exist_ok=True)
@@ -128,7 +214,6 @@ def disable_autostart():
             pass
 
 # ---------- Config persistente ----------
-
 def listar_camaras_disponibles(max_cams=8):
     disponibles = []
     for i in range(max_cams):
@@ -185,6 +270,9 @@ def guardar_configuracion():
         # mantén metadatos existentes
         meta = _meta_from_config(prev)
 
+        # Resolución elegida
+        cfg_res = {"capture_resolution_label": current_resolution_label}
+
         config = {
             "frecuencia": entry_freq.get(),
             "dias": [var.get() for var in day_vars],
@@ -203,6 +291,7 @@ def guardar_configuracion():
             "gps_lat": meta.get("gps_lat", ""),
             "gps_lon": meta.get("gps_lon", ""),
         }
+        config.update(cfg_res)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -222,6 +311,7 @@ def _save_meta_to_config(new_meta: dict):
 
 def cargar_configuracion():
     global CAM_INDEX, PHOTO_DIR, DRIVE_DIR, _want_stream_on_start
+    global current_resolution_label
 
     if not os.path.exists(CONFIG_FILE):
         return None
@@ -262,6 +352,9 @@ def cargar_configuracion():
     info_gps_lat.set(config.get("gps_lat", ""))
     info_gps_lon.set(config.get("gps_lon", ""))
 
+    # resolución elegida (para inicializar UI luego)
+    current_resolution_label = config.get("capture_resolution_label", current_resolution_label)
+
     if config.get("timelapse_activo", False):
         root.after(500, start_timelapse)
 
@@ -269,7 +362,6 @@ def cargar_configuracion():
     return config
 
 # ---------- Carpetas ----------
-
 def seleccionar_directorio_manual(titulo):
     carpeta = fd.askdirectory(title=titulo)
     if carpeta:
@@ -347,7 +439,6 @@ def seleccionar_drive_manual():
         messagebox.showerror("Permisos", "No hay permiso de escritura en la carpeta seleccionada.")
 
 # ---------- Sincronización ----------
-
 def sincronizar_fotos():
     try:
         if not os.path.exists(DRIVE_DIR):
@@ -371,7 +462,8 @@ def sincronizar_fotos():
     except Exception as e:
         lbl_status_general.config(text=f"Error al sincronizar: {e}")
 
-# ---------- Imagen (tamaño fijo) ----------
+# ---------- Imagen (usando ImagePanel) ----------
+image_panel = None  # se crea en el layout
 
 def get_last_photo():
     if not os.path.exists(PHOTO_DIR):
@@ -381,45 +473,41 @@ def get_last_photo():
         return os.path.join(PHOTO_DIR, fotos[-1])
     return None
 
-def _placeholder_image():
-    img = Image.new("RGB", (DISPLAY_W, DISPLAY_H), (64, 64, 64))
-    return img
+# Abrir carpeta de fotos
+def abrir_carpeta_fotos():
+    """Abre la carpeta actual de fotos en el explorador del sistema."""
+    global PHOTO_DIR
+    if not PHOTO_DIR:
+        messagebox.showerror("Carpeta", "La carpeta de fotos no está configurada.")
+        return
+    path = os.path.realpath(PHOTO_DIR)
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception as e:
+        messagebox.showerror("Carpeta", f"No se pudo abrir la carpeta:\n{e}")
 
 def update_main_image():
+    if image_panel is None:
+        return
     try:
         last_photo = get_last_photo()
         if last_photo and os.path.exists(last_photo):
-            img = Image.open(last_photo)
+            img = Image.open(last_photo).convert("RGB")
         else:
             try:
-                img = Image.open("kreativerkatcam.jpg")
+                img = Image.open("kreativerkatcam.jpg").convert("RGB")
             except Exception:
-                img = _placeholder_image()
-
-        img = ImageOps.contain(img, (DISPLAY_W, DISPLAY_H))
-        photo = ImageTk.PhotoImage(img)
-        lbl_main_image.config(image=photo, width=DISPLAY_W, height=DISPLAY_H)
-        lbl_main_image.image = photo
+                img = Image.new("RGB", (IMG_MIN_W, IMG_MIN_H), (64, 64, 64))
+        image_panel.set_image(img)
     except Exception as e:
         lbl_status_general.config(text=f"Error mostrando imagen: {e}")
 
-def update_stream_image(img):
-    img = ImageOps.contain(img, (DISPLAY_W, DISPLAY_H))
-    photo = ImageTk.PhotoImage(img)
-    lbl_main_image.config(image=photo, width=DISPLAY_W, height=DISPLAY_H)
-    lbl_main_image.image = photo
-
-def abrir_carpeta_fotos():
-    path = os.path.realpath(PHOTO_DIR)
-    if sys.platform == "win32":
-        os.startfile(path)
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", path])
-    else:
-        subprocess.Popen(["xdg-open", path])
-
 # ---------- STREAM helpers ----------
-
 ui_refresh_ms = 40  # ~25 fps
 
 def _tick_stream():
@@ -428,7 +516,7 @@ def _tick_stream():
     frame_rgb = camera_manager.get_frame_rgb()
     if frame_rgb is not None:
         img = Image.fromarray(frame_rgb)
-        update_stream_image(img)
+        image_panel.set_image(img)
     if streaming:
         root.after(ui_refresh_ms, _tick_stream)
 
@@ -442,11 +530,32 @@ def update_stream_ui():
         btn_switch_trans.config(text="Iniciar transmisión", bg=BTN_COLOR, fg=BTN_TEXT_COLOR)
         toggle_transmision.on = False
 
+def _find_res(label: str) -> Optional[Tuple[int, int]]:
+    for t, w, h in RESOLUTIONS:
+        if t == label:
+            return (w, h)
+    return None
+
+def _apply_camera_resolution(w: int, h: int):
+    # Intento principal: pedir al manager que cambie resolución
+    try:
+        if hasattr(camera_manager, "set_resolution"):
+            camera_manager.set_resolution(w, h)
+            return
+    except Exception as e:
+        print("camera_manager.set_resolution error:", e)
+    # Alternativa: algunos managers aplican al iniciar el stream; aquí solo guardamos preferencia
+    pass
+
 def stream_on():
     global streaming
     if streaming:
         return
     streaming = True
+    # Aplica resolución preferida al iniciar
+    wh = _find_res(current_resolution_label)
+    if wh:
+        _apply_camera_resolution(*wh)
     camera_manager.start_stream()
     update_stream_ui()
     lbl_status_general.config(text="Transmisión en directo")
@@ -481,7 +590,6 @@ def toggle_transmision():
         mostrar_transmision()
 
 # ---------- FOTO ----------
-
 def take_and_update():
     global is_capturing
     if maniobra_running:
@@ -500,9 +608,12 @@ def take_and_update():
             if was_streaming and not timelapse_running:
                 root.after(0, stream_off)
                 time.sleep(0.08)
+            # pasa la resolución preferida al capturador, si tu módulo la usa
+            wh = _find_res(current_resolution_label)
+            prefer = [wh] if wh else None
             take_photo(
                 dest_folder=PHOTO_DIR,
-                prefer_sizes=None,
+                prefer_sizes=prefer,
                 jpeg_quality=95,
                 auto_resume_stream=bool(was_streaming and timelapse_running),
                 block_until_done=True
@@ -532,7 +643,6 @@ def take_and_update():
     threading.Thread(target=_work, daemon=True).start()
 
 # ---------- TIMELAPSE ----------
-
 next_capture_time = None
 interval_ms = 600000
 days_selected = []
@@ -602,7 +712,6 @@ def schedule_next_capture():
     root.after(interval_ms, schedule_next_capture)
 
 # ---------- Autoajuste de cámara (un solo botón) ----------
-
 def camera_autoadjust():
     """
     Botón único de autoajuste:
@@ -613,7 +722,6 @@ def camera_autoadjust():
     lbl_status_general.config(text="Autoajuste aplicado (expo/WB automáticos).")
 
 # ---------- UI ----------
-
 root = tk.Tk()
 root.title("Katcam Pro")
 try:
@@ -621,14 +729,26 @@ try:
 except Exception:
     pass
 root.configure(bg=BG_COLOR)
+root.minsize(MIN_APP_W, MIN_APP_H)
+
+# posición/tamaño inicial centrado
 screen_width = root.winfo_screenwidth()
 screen_height = root.winfo_screenheight()
-win_width = int(screen_width * 0.8)
-win_height = int(screen_height * 0.8)
+win_width = max(int(screen_width * 0.8), MIN_APP_W)
+win_height = max(int(screen_height * 0.8), MIN_APP_H)
 x = (screen_width - win_width) // 2
 y = (screen_height - win_height) // 2
 root.geometry(f"{win_width}x{win_height}+{x}+{y}")
 root.resizable(True, True)
+
+# contenedor raíz (con o sin scroll)
+if USE_SCROLL_CONTAINER:
+    container = ScrollableFrame(root, bg=BG_COLOR)
+    container.pack(fill="both", expand=True)
+    parent = container.inner
+else:
+    parent = tk.Frame(root, bg=BG_COLOR)
+    parent.pack(fill="both", expand=True)
 
 # Menú
 menubar = tk.Menu(root, bg=BG_COLOR, fg=FG_COLOR)
@@ -679,29 +799,69 @@ ajustes_menu = tk.Menu(menubar, tearoff=0, bg=BG_COLOR, fg=FG_COLOR)
 menubar.add_cascade(label="Ajustes", menu=ajustes_menu)
 ajustes_menu.add_command(label="Inicio con Windows…", command=open_autostart_window)
 
-# Logo
+# Header (logo izquierda, reloj derecha)
+header_frame = tk.Frame(parent, bg=BG_COLOR)
+header_frame.pack(fill="x", pady=(12, 6))
+header_frame.grid_columnconfigure(0, weight=0)
+header_frame.grid_columnconfigure(1, weight=1)
 try:
     logo_img = Image.open("logo_katcam.png")
     logo_img = ImageOps.contain(logo_img, (350, 150))
     logo_photo = ImageTk.PhotoImage(logo_img)
-    logo_label = tk.Label(root, image=logo_photo, bg=BG_COLOR)
-    logo_label.pack(pady=(15, 10))
+    logo_label = tk.Label(header_frame, image=logo_photo, bg=BG_COLOR)
+    logo_label.grid(row=0, column=0, sticky="w", padx=10)
 except Exception:
-    pass
+    logo_label = tk.Label(header_frame, text="Katcam Pro", bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 20, "bold"))
+    logo_label.grid(row=0, column=0, sticky="w", padx=10)
 
-main_frame = tk.Frame(root, bg=BG_COLOR)
-main_frame.pack(padx=10, pady=10)
+# Reloj arriba a la derecha
+def update_clock():
+    local_timezone = tzlocal.get_localzone()
+    now = datetime.now(local_timezone)
+    lbl_clock.config(text=now.strftime("%H:%M:%S") + f" ({local_timezone})")
+    root.after(1000, update_clock)
+lbl_clock = tk.Label(header_frame, text="", bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 14, "bold"))
+lbl_clock.grid(row=0, column=1, sticky="e", padx=12)
+update_clock()
 
-# Columna 1: Imagen (fija)
+main_frame = tk.Frame(parent, bg=BG_COLOR)
+main_frame.pack(padx=10, pady=10, fill="both", expand=True)
+
+# --- tres columnas responsivas (alineadas) ---
+main_frame.grid_columnconfigure(0, weight=5, uniform="cols")  # imagen
+main_frame.grid_columnconfigure(1, weight=2, uniform="cols")  # botones
+main_frame.grid_columnconfigure(2, weight=3, uniform="cols")  # pestañas
+main_frame.grid_rowconfigure(0, weight=1)
+
+# Columna 1: Imagen (ImagePanel)
 image_frame = tk.Frame(main_frame, bg=BG_COLOR)
-image_frame.grid(row=0, column=0, padx=10, pady=10, sticky="n")
-tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=BTN_COLOR).pack(pady=5)
-lbl_main_image = tk.Label(image_frame, bg="gray", width=DISPLAY_W, height=DISPLAY_H)
-lbl_main_image.pack(pady=5)
+image_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+tk.Label(image_frame, text="Última foto/Transmisión", font=("Arial", 16, "bold"),
+         bg=BG_COLOR, fg=BTN_COLOR, anchor="w").pack(pady=5, anchor="w", fill="x")
+image_panel = ImagePanel(image_frame, bg=BG_COLOR, min_size=(IMG_MIN_W, IMG_MIN_H))
+image_panel.pack(fill="both", expand=True, pady=5)
 
-# Columna 2: Botones
+# --- Bloque de estados debajo de la imagen, misma columna ---
+status_frame = tk.Frame(image_frame, bg=BG_COLOR)
+status_frame.pack(fill="x", pady=(8, 0))
+lbl_status_transmision = tk.Label(status_frame, text="Transmisión: DETENIDA", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11, "bold"))
+lbl_status_transmision.grid(row=0, column=0, sticky="w", padx=2, pady=1)
+lbl_status_timelapse = tk.Label(status_frame, text="Timelapse: DETENIDO", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11, "bold"))
+lbl_status_timelapse.grid(row=1, column=0, sticky="w", padx=2, pady=1)
+lbl_status_maniobra = tk.Label(status_frame, text="Maniobra: INACTIVA", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11, "bold"))
+lbl_status_maniobra.grid(row=2, column=0, sticky="w", padx=2, pady=1)
+lbl_status_general = tk.Label(status_frame, text="Listo", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 10))
+lbl_status_general.grid(row=3, column=0, sticky="w", padx=2, pady=(4, 2))
+
+# Columna 2: Botones (pegada arriba, tamaño estable)
 button_frame = tk.Frame(main_frame, bg=BG_COLOR)
 button_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
+button_frame.grid_propagate(False)
+button_frame.update_idletasks()
+# Forzamos a calcular dimensiones y establecemos tamaño mínimo de la ventana principal
+root.update_idletasks()
+root.minsize(800, 600)   # ajusta si quieres
+
 tk.Label(button_frame, text="", bg=BG_COLOR).pack(pady=5)
 
 btn_take = tk.Button(
@@ -749,6 +909,10 @@ def toggle_maniobra():
             return
         fin = datetime.now() + timedelta(seconds=duracion_min * 60)
         maniobra_running = True
+        try:
+            lbl_status_maniobra.config(text="Maniobra: ACTIVA")
+        except Exception:
+            pass
         lbl_status_general.config(text="Maniobra en curso...")
         if streaming:
             stream_off()
@@ -759,6 +923,10 @@ def toggle_maniobra():
                 lbl_status_general.config(text="Maniobra finalizada.")
                 btn_maniobra.config(text="Iniciar Maniobra", bg=BTN_COLOR, fg=BTN_TEXT_COLOR)
                 toggle_maniobra.on = False
+                try:
+                    lbl_status_maniobra.config(text="Maniobra: INACTIVA")
+                except Exception:
+                    pass
                 return
             threading.Thread(
                 target=lambda: take_photo(PHOTO_DIR, block_until_done=True, auto_resume_stream=False),
@@ -775,6 +943,10 @@ def toggle_maniobra():
         lbl_status_general.config(text="Maniobra cancelada por el usuario.")
         btn_maniobra.config(text="Iniciar Maniobra", bg=BTN_COLOR, fg=BTN_TEXT_COLOR)
         toggle_maniobra.on = False
+        try:
+            lbl_status_maniobra.config(text="Maniobra: INACTIVA")
+        except Exception:
+            pass
 
 toggle_maniobra.on = False
 
@@ -785,40 +957,24 @@ btn_maniobra = tk.Button(
 )
 btn_maniobra.pack(pady=8)
 
-# Estados
-lbl_status_transmision = tk.Label(button_frame, text="Transmisión: DETENIDA", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11, "bold"))
-lbl_status_transmision.pack(pady=(5, 2))
-lbl_status_timelapse = tk.Label(button_frame, text="Timelapse: DETENIDO", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 11, "bold"))
-lbl_status_timelapse.pack(pady=(0, 2))
-lbl_status_general = tk.Label(button_frame, text="Listo", bg=BG_COLOR, fg=FG_COLOR, font=("Arial", 10))
-lbl_status_general.pack(pady=(0, 5))
-
-# Reloj
-def update_clock():
-    local_timezone = tzlocal.get_localzone()
-    now = datetime.now(local_timezone)
-    lbl_clock.config(text=now.strftime("%H:%M:%S") + f" ({local_timezone})")
-    root.after(1000, update_clock)
-
-lbl_clock = tk.Label(button_frame, text="", bg=BG_COLOR, fg=BTN_COLOR, font=("Arial", 13, "bold"))
-lbl_clock.pack(pady=(0, 10))
-update_clock()
-
 btn_open_folder = tk.Button(
     button_frame, text="Abrir carpeta de fotos", command=abrir_carpeta_fotos, width=25, height=2,
     bg=BG_COLOR, fg=BTN_COLOR, activebackground=BG_COLOR, activeforeground=BTN_COLOR,
     bd=2, highlightbackground=BTN_BORDER_COLOR, highlightcolor=BTN_BORDER_COLOR,
     font=("Arial", 12, "bold"), padx=10, pady=10
 )
-btn_open_folder.pack(pady=10)
+btn_open_folder.pack(pady=10, anchor="n")
 
-# Columna 3: Configuración (pestañas)
+# Columna 3: Configuración (pestañas) con grid para llenar espacio
 config_frame = tk.Frame(main_frame, bg=BG_COLOR)
-config_frame.grid(row=0, column=2, padx=10, pady=10, sticky="n")
+config_frame.grid(row=0, column=2, padx=10, pady=10, sticky="nsew")
+config_frame.grid_rowconfigure(1, weight=1)
 
-tk.Label(config_frame, text="Configuraciones", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=BTN_COLOR).pack(pady=(0, 10))
+tk.Label(config_frame, text="Configuraciones", font=("Arial", 16, "bold"),
+         bg=BG_COLOR, fg=BTN_COLOR).grid(row=0, column=0, sticky="w", pady=(0, 10))
+
 notebook = ttk.Notebook(config_frame)
-notebook.pack(fill="both", expand=True)
+notebook.grid(row=1, column=0, sticky="nsew")
 
 # 1) Timelapse
 tab_timelapse = tk.Frame(notebook, bg=BG_COLOR)
@@ -867,7 +1023,7 @@ entry_maniobra_intervalo = tk.Entry(tab_maniobra)
 entry_maniobra_intervalo.pack(anchor="w", padx=10, pady=5)
 entry_maniobra_intervalo.insert(0, "1")
 
-# 3) Cámara (solo botón de autoajuste)
+# 3) Cámara
 tab_camara = tk.Frame(notebook, bg=BG_COLOR)
 notebook.add(tab_camara, text="Cámara")
 
@@ -884,6 +1040,25 @@ btn_ctrl_dialog = tk.Button(
     bg="#FFB300", fg="#181818", bd=0, font=("Arial", 11, "bold"), padx=10, pady=8
 )
 btn_ctrl_dialog.pack(pady=6, padx=10, anchor="center")
+
+# --- Selector de resolución ---
+tk.Label(tab_camara, text="Resolución de captura/stream:", bg=BG_COLOR, fg=FG_COLOR).pack(pady=(14, 2))
+resolution_var = tk.StringVar(value=current_resolution_label)
+res_values = [t for (t, _, _) in RESOLUTIONS]
+res_combo = ttk.Combobox(tab_camara, textvariable=resolution_var, values=res_values, state="readonly", width=28)
+res_combo.pack(pady=(0, 8))
+
+def _on_resolution_change(_evt=None):
+    global current_resolution_label
+    current_resolution_label = resolution_var.get()
+    wh = _find_res(current_resolution_label)
+    if wh:
+        w, h = wh
+        _apply_camera_resolution(w, h)
+        lbl_status_general.config(text=f"Resolución preferida: {w}x{h}")
+        guardar_configuracion()
+
+res_combo.bind("<<ComboboxSelected>>", _on_resolution_change)
 
 # 4) Info (Cliente/Proyecto/ID/GPS + conteo fotos + mapa futuro)
 tab_info = tk.Frame(notebook, bg=BG_COLOR)
@@ -1028,19 +1203,27 @@ def update_system_info():
 update_system_info()
 
 # ---------- Inicialización ----------
-
 PHOTO_DIR = inicializar_directorio_fotos()
 DRIVE_DIR = inicializar_directorio_drive()
 
 update_stream_ui()
-cargar_configuracion()
-update_main_image()
-_refresh_info_tab()
-
-def _resume_stream_if_needed():
+# Después de construir la UI por completo
+def _after_ui_built():
+    cfg = cargar_configuracion()
+    # Sincroniza el combo con la config cargada
+    try:
+        resolution_var.set(current_resolution_label)
+    except Exception:
+        pass
+    update_main_image()
+    _refresh_info_tab()
     if _want_stream_on_start:
+        # Aplica resolución preferida al arrancar stream
+        wh = _find_res(current_resolution_label)
+        if wh:
+            _apply_camera_resolution(*wh)
         stream_on()
-root.after(800, _resume_stream_if_needed)
+root.after(300, _after_ui_built)
 
 def sync_auto():
     sincronizar_fotos()
@@ -1056,8 +1239,6 @@ def on_close():
     root.destroy()
 
 root.protocol("WM_DELETE_WINDOW", on_close)
-
-# ya no redimensionamos la imagen por tamaño de ventana; es fija.
 
 sync_auto()
 root.mainloop()
