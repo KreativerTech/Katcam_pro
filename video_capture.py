@@ -56,10 +56,10 @@ class CameraManager:
         self._cmd_q.put(("stop_stream", None))
 
     def take_photo(self, dest_folder: str, prefer_sizes=None, jpeg_quality=95,
-                   auto_resume_stream=True, block_until_done=True):
+                   auto_resume_stream=True, block_until_done=True, timeout=3):
         """
         Captura foto; si el stream estaba activo y auto_resume_stream=True,
-        reanuda automáticamente tras guardar.
+        reanuda automáticamente tras guardar. Ahora con timeout para evitar bloqueos.
         """
         done = threading.Event()
         self._cmd_q.put(("capture", {
@@ -70,7 +70,8 @@ class CameraManager:
             "done_evt": done
         }))
         if block_until_done:
-            done.wait()
+            if not done.wait(timeout=timeout):
+                print(f"[ERROR] Captura de foto excedió el timeout de {timeout}s")
 
     def set_property(self, prop_id, value):
         """Encola cambios de propiedad; el worker los aplica con debounce."""
@@ -84,13 +85,35 @@ class CameraManager:
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def shutdown(self):
+        # Señal de apagado
         self._running = False
-        self._cmd_q.put(("shutdown", None))
-        self._worker.join(timeout=1.0)
+        try:
+            self._cmd_q.put(("shutdown", None))
+        except Exception:
+            pass
+
+        # Detén stream si aplica (por si hay lecturas en paralelo)
+        try:
+            self.stop_stream()
+        except Exception:
+            pass
+
+        # Espera al worker si existe (timeout reducido)
+        t = getattr(self, "_worker", None)
+        if t and t.is_alive():
+            t.join(timeout=0.5)
+        self._worker = None
+
+        # Libera la cámara sin carrera (setea None antes de release)
+        cap = None
         with self._lock:
-            if self._cap is not None:
-                self._cap.release()
-                self._cap = None
+            cap, self._cap = self._cap, None
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+
 
     # ---- Extras: diálogo del controlador y modos auto ----
     def show_driver_settings(self):
@@ -141,12 +164,16 @@ class CameraManager:
                 with self._lock:
                     if self._cap is None:
                         self._open_for_preview_locked()
-                    ok, frame = self._cap.read()
+                    try:
+                        ok, frame = self._cap.read()
+                    except Exception as e:
+                        print(f"[ERROR] Error leyendo frame: {e}")
+                        ok, frame = False, None
                 if ok:
                     with self._frame_lock:
                         self._last_frame = frame
                 else:
-                    cv2.waitKey(1)
+                    time.sleep(0.01)
             else:
                 time.sleep(0.01)
 
@@ -181,8 +208,11 @@ class CameraManager:
         if self._cap is not None:
             self._cap.release()
         self._cap = cv2.VideoCapture(self.cam_index, self.backend)
-        if self.use_mjpg:
-            self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        if self.use_mjpg and self._cap.isOpened():
+            try:
+                self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            except cv2.error as e:
+                print(f"[WARN] No se pudo cambiar FOURCC a MJPG: {e}")
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.preview_w)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.preview_h)
         self._cap.set(cv2.CAP_PROP_FPS,          self.preview_fps)
@@ -220,31 +250,46 @@ class CameraManager:
             if self._cap is None:
                 self._open_for_preview_locked()
 
-            if self.use_mjpg:
-                self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            if self.use_mjpg and self._cap.isOpened():
+                try:
+                    self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                except cv2.error as e:
+                    print(f"[WARN] No se pudo cambiar FOURCC a MJPG: {e}")
             self._try_set_resolution_locked(prefer_sizes)
 
             for _ in range(3):
-                self._cap.read()
+                try:
+                    self._cap.read()
+                except Exception as e:
+                    print(f"[ERROR] Error leyendo frame previo a captura: {e}")
                 time.sleep(0.05)
 
-            ok, frame = self._cap.read()
+            try:
+                ok, frame = self._cap.read()
+            except Exception as e:
+                print(f"[ERROR] Error leyendo frame de captura: {e}")
+                ok, frame = False, None
 
             if ok:
-                os.makedirs(dest_folder, exist_ok=True)
-                filename = datetime.now().strftime("%Y%m%d_%H%M%S") + ".jpg"
-                path = os.path.join(dest_folder, filename)
-                cv2.imwrite(path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
-                # sin prints; la UI informará
+                try:
+                    os.makedirs(dest_folder, exist_ok=True)
+                    filename = datetime.now().strftime("%Y%m%d_%H%M%S") + ".jpg"
+                    path = os.path.join(dest_folder, filename)
+                    cv2.imwrite(path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+                except Exception as e:
+                    print(f"[ERROR] Error guardando foto: {e}")
             else:
-                pass
+                print("[ERROR] No se pudo capturar la foto (frame inválido)")
 
             if auto_resume and was_streaming:
-                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.preview_w)
-                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.preview_h)
-                self._cap.set(cv2.CAP_PROP_FPS,          self.preview_fps)
-                for _ in range(2):
-                    self._cap.read()
+                try:
+                    self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.preview_w)
+                    self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.preview_h)
+                    self._cap.set(cv2.CAP_PROP_FPS,          self.preview_fps)
+                    for _ in range(2):
+                        self._cap.read()
+                except Exception as e:
+                    print(f"[WARN] Error reanudando stream tras captura: {e}")
                 self._stream_enabled = True
 
         if done_evt:

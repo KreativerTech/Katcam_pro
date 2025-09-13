@@ -17,7 +17,7 @@
 ; --- Datos de la app ---
 AppId={{F3F7E7B9-4EC1-4D4B-B2D4-1C9D2E12A3D7}
 AppName=Katcam Pro
-AppVersion=2.2.1
+AppVersion=2.3.0
 AppPublisher=KreativerTech
 AppPublisherURL=https://kreativer.tech
 
@@ -25,7 +25,7 @@ AppPublisherURL=https://kreativer.tech
 DefaultDirName={autopf}\KreativerTech\Katcam Pro
 DefaultGroupName=Katcam Pro
 DisableProgramGroupPage=yes
-OutputBaseFilename=KatcamPro-Setup-2.2.0
+OutputBaseFilename=KatcamPro-Setup-2.3.0
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern

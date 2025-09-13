@@ -87,7 +87,13 @@ class HeaderBanner(tk.Frame):
         except Exception as e:
             print(f"[HEADER] {e}")
 
-        self._target_h = 160
+        # Alto del header responsivo (100–160 px según altura de pantalla)
+        try:
+            screen_h = parent.winfo_screenheight()
+        except Exception:
+            screen_h = 900
+        self._target_h = max(100, min(160, int(screen_h * 0.16)))
+
         self._id_text = None
         self._clock_text = None
         self._left_pad = 12
@@ -157,7 +163,7 @@ class HeaderBanner(tk.Frame):
                 self._canvas.coords(self._bg_img_id, 0, 0)
             self._canvas.tag_lower(self._bg_img_id)
 
-        left_label = f"Nombre del equipo: {self._camera_name_getter()}"
+        left_label = f"ID: {self._camera_name_getter()}"
         if self._id_text is None:
             self._id_text = self._canvas.create_text(
                 self._left_pad, h - self._bottom_pad,
@@ -253,88 +259,62 @@ def build_main_window(root: tk.Tk):
     root.geometry(f"{ww}x{wh}+{x}+{y}")
     root.resizable(True, True)
 
+    # Fullscreen / kiosk
+    try:
+        root.attributes('-fullscreen', True)
+    except tk.TclError:
+        try:
+            root.state('zoomed')
+        except Exception:
+            pass
+
     state = AppState(root)
-
-    # -------- Menú --------
-    menubar = tk.Menu(root, bg=BG_COLOR, fg=FG_COLOR); root.config(menu=menubar)
-
-    archivo = tk.Menu(menubar, tearoff=0, bg=BG_COLOR, fg=FG_COLOR)
-    archivo.add_command(label="Salir", command=root.quit)
-    menubar.add_cascade(label="Archivo", menu=archivo)
-
-    opciones = tk.Menu(menubar, tearoff=0, bg=BG_COLOR, fg=FG_COLOR)
-    opciones.add_command(label="Cambiar carpeta de fotos...", command=lambda: _cambiar_directorio_fotos(state))
-    opciones.add_command(label="Cambiar carpeta de Google Drive...", command=lambda: _seleccionar_drive_manual(state))
-    menubar.add_cascade(label="Opciones", menu=opciones)
-
-    ajustes = tk.Menu(menubar, tearoff=0, bg=BG_COLOR, fg=FG_COLOR)
-    ajustes.add_command(label="Inicio con Windows…", command=lambda: open_autostart_window(root, set_status(state)))
-    menubar.add_cascade(label="Ajustes", menu=ajustes)
-
-    ayuda = tk.Menu(menubar, tearoff=0, bg=BG_COLOR, fg=FG_COLOR)
-    ayuda.add_command(label="Info", command=lambda: open_info_window(root, state))
-    menubar.add_cascade(label="Ayuda", menu=ayuda)
 
     # -------- Header --------
     def _get_name():
         return state.cfg.data.get("camera_id", "") or "Sin ID"
+
     header = HeaderBanner(root, camera_name_getter=_get_name)
     header.pack(fill="x", pady=0)
-    # refrescar el header cuando se actualiza la info del cliente
+    header.update_idletasks()
+    try:
+        header.configure(height=header._target_h)
+    except Exception:
+        pass
+    header.pack_propagate(False)
+
+    # refrescar header cuando cambia la info
     def _on_info_updated(_evt=None):
-        header._render()   # vuelve a dibujar usando el valor actual guardado
+        header._render()
+        try:
+            if hasattr(header, "_toolbar_win"):
+                header._canvas.tag_raise(header._toolbar_win)
+        except Exception:
+            pass
     root.bind("<<INFO_UPDATED>>", _on_info_updated)
 
+    # -------- Viewer (responsivo) --------
+    viewer = tk.Frame(root, bg=BG_COLOR)
+    viewer.pack(fill="both", expand=True, padx=10, pady=10)
 
-    # -------- Viewer --------
-    viewer = tk.Frame(root, bg=BG_COLOR); viewer.pack(fill="both", expand=True, padx=10, pady=10)
-    state.image_panel = ImagePanel(viewer, bg=BG_COLOR, min_size=(IMG_MIN_W, IMG_MIN_H))
+    # Minimos responsivos: aseguran uso en 800x600 sin romper en pantallas grandes
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    min_w = max(320, int(sw * 0.25), IMG_MIN_W)  # al menos 320 o 25% del ancho o lo que diga settings
+    min_h = max(220, int(sh * 0.25), IMG_MIN_H)  # al menos 220 o 25% del alto o lo que diga settings
+
+    state.image_panel = ImagePanel(viewer, bg=BG_COLOR, min_size=(min_w, min_h))
     state.image_panel.pack(fill="both", expand=True)
 
-    # -------- Footer --------
-    footer = tk.Frame(root, bg=BTN_COLOR); footer.pack(fill="x", padx=0, pady=0)
-
-    # Botones
-    buttons_wrap = tk.Frame(footer, bg=BTN_COLOR); buttons_wrap.pack(side="left", padx=8, pady=8)
-    gridpad = dict(padx=6, pady=0)
-
-    wr, state.btn_switch_timelapse = outlined_button(buttons_wrap, "Iniciar Timelapse", lambda: toggle_timelapse(state))
-    wr.grid(row=0, column=0, **gridpad)
-    wr, state.btn_switch_trans = outlined_button(buttons_wrap, "Iniciar transmisión", lambda: toggle_transmision(state))
-    wr.grid(row=0, column=1, **gridpad)
-    wr, state.btn_maniobra = outlined_button(buttons_wrap, "Maniobra", lambda: toggle_maniobra(state))
-    wr.grid(row=0, column=2, **gridpad)
-    wr, _btn_take = outlined_button(buttons_wrap, "📸 Captura", lambda: take_and_update(state))
-    wr.grid(row=0, column=3, **gridpad)
-
+    # ============================================================
+    # Config modal (debe existir ANTES de construir el botón ⚙)
+    # ============================================================
     cfg_holder = {"win": None}
+
     def open_config():
         if cfg_holder["win"] is not None and tk.Toplevel.winfo_exists(cfg_holder["win"].win):
-            cfg_holder["win"].win.deiconify(); cfg_holder["win"].win.lift(); return
-
-        def on_save_config():
-            (freq_min, dias, hstart, hend, maniobra_dur, maniobra_int,
-             photo_res_label, video_res_label, cam_index, gps_lat, gps_lon) = cfg_holder["win"].read_all()
-
-            # Guardar config
-            state.cfg.set(
-                frecuencia_min=freq_min, dias=dias, hora_inicio=hstart, hora_fin=hend,
-                maniobra_duracion=maniobra_dur, maniobra_intervalo=maniobra_int,
-                photo_resolution_label=photo_res_label, video_resolution_label=video_res_label,
-                cam_index=cam_index, gps_lat=gps_lat, gps_lon=gps_lon
-            )
-
-            # Actualizar estado + cámara
-            state.photo_resolution_label = photo_res_label
-            state.video_resolution_label = video_res_label
-            if cam_index != state.cam_index:
-                state.cam_index = cam_index
-                try:
-                    camera_manager.set_cam_index(state.cam_index)
-                except Exception as e:
-                    set_status(state)(f"No se pudo cambiar cámara: {e}")
-
-            set_status(state)("Configuración guardada.")
+            cfg_holder["win"].win.deiconify()
+            cfg_holder["win"].win.lift()
+            return
 
         def on_auto_wb():
             try:
@@ -350,35 +330,203 @@ def build_main_window(root: tk.Tk):
                 messagebox.showinfo("Ajustes avanzados", f"No disponible: {e}")
 
         def on_resolution_change(new_label: str):
-            # (modo simple) un solo combo → aplica a foto y video
             state.video_resolution_label = new_label
             state.photo_resolution_label = new_label
-            state.current_resolution_label = new_label  # compatibilidad
+            state.current_resolution_label = new_label
             state.cfg.set(video_resolution_label=new_label, photo_resolution_label=new_label)
             set_status(state)(f"Resolución preferida: {new_label}")
 
-        cfg_holder["win"] = ConfigWindow(root, state, on_save_config, on_auto_wb, on_open_driver, on_resolution_change)
+        def on_save_config():
+            vals = cfg_holder["win"].read_all()
+            # Acepta 9 valores (sin GPS). Si vienen 11, ignora los extra.
+            if len(vals) == 9:
+                (freq_min, dias, hstart, hend, maniobra_dur, maniobra_int,
+                 photo_res_label, video_res_label, cam_index) = vals
+            else:
+                (freq_min, dias, hstart, hend, maniobra_dur, maniobra_int,
+                 photo_res_label, video_res_label, cam_index, *_gps_ignored) = vals
 
-    wr, _btn_open_config = outlined_button(buttons_wrap, "Configuración", open_config)
-    wr.grid(row=0, column=4, **gridpad)
+            state.cfg.set(
+                frecuencia_min=freq_min, dias=dias, hora_inicio=hstart, hora_fin=hend,
+                maniobra_duracion=maniobra_dur, maniobra_intervalo=maniobra_int,
+                photo_resolution_label=photo_res_label, video_resolution_label=video_res_label,
+                cam_index=cam_index
+            )
 
-    wr, _btn_open_folder = outlined_button(buttons_wrap, "Abrir carpeta", lambda: _abrir_carpeta(state))
-    wr.grid(row=0, column=5, **gridpad)
+            state.photo_resolution_label = photo_res_label
+            state.video_resolution_label = video_res_label
 
-    # Status box + Logo empresa a continuación
-    status_box = tk.Frame(footer, bg="black", bd=0, highlightthickness=1, highlightbackground="#333")
-    status_box.pack(side="left", padx=8, pady=8)
+            if cam_index != state.cam_index:
+                state.cam_index = cam_index
+                try:
+                    camera_manager.set_cam_index(state.cam_index)
+                except Exception as e:
+                    set_status(state)(f"No se pudo cambiar cámara: {e}")
 
-    state.lbl_status_transmision = tk.Label(status_box, text="Transmisión: DETENIDA", bg="black", fg="#a6ffa6", font=("Arial", 11, "bold"))
+            set_status(state)("Configuración guardada.")
+
+        cfg_holder["win"] = ConfigWindow(
+            root, state, on_save_config, on_auto_wb, on_open_driver, on_resolution_change
+        )
+
+    # Helper: abrir galería si existe, o carpeta como fallback
+    def _open_gallery_or_folder():
+        func = globals().get("open_gallery_window")
+        if callable(func):
+            try:
+                func(state)
+                return
+            except Exception:
+                pass
+        _abrir_carpeta(state)
+
+    # -------- Mini toolbar en el header: ☰  ⚙  📁 --------
+    toolbar = tk.Frame(header, bg=BTN_COLOR)
+
+    # ☰ Menú
+    menu_btn = tk.Button(
+        toolbar, text="☰",
+        bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
+        bd=0, relief="flat", font=("Arial", 15, "bold"),
+        padx=10, pady=4, cursor="hand2"
+    )
+    menu_btn.pack(side="left", padx=(0, 6))
+
+    dd_menu = tk.Menu(
+        menu_btn, tearoff=0,
+        bg=BG_COLOR, fg=FG_COLOR,
+        activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR
+    )
+    dd_menu.add_command(label="Cambiar carpeta de fotos…", command=lambda: _cambiar_directorio_fotos(state))
+    dd_menu.add_command(label="Cambiar carpeta de Google Drive…", command=lambda: _seleccionar_drive_manual(state))
+    dd_menu.add_separator()
+    dd_menu.add_command(label="Inicio con Windows…", command=lambda: open_autostart_window(root, set_status(state)))
+    dd_menu.add_separator()
+    dd_menu.add_command(label="Info", command=lambda: open_info_window(root, state))
+
+    def _show_menu(_evt=None):
+        dd_menu.update_idletasks()
+        x = menu_btn.winfo_rootx()
+        y = menu_btn.winfo_rooty() + menu_btn.winfo_height()
+        dd_menu.post(x, y)
+    menu_btn.configure(command=_show_menu)
+
+    # ⚙ Config
+    gear_btn = tk.Button(
+        toolbar, text="⚙",
+        command=open_config,
+        bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
+        bd=0, relief="flat", font=("Arial", 14, "bold"),
+        padx=10, pady=4, cursor="hand2"
+    )
+    gear_btn.pack(side="left", padx=(0, 6))
+
+    # 📁 Galería (o carpeta)
+    folder_btn = tk.Button(
+        toolbar, text="📁",
+        command=_open_gallery_or_folder,
+        bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
+        bd=0, relief="flat", font=("Arial", 14, "bold"),
+        padx=10, pady=4, cursor="hand2"
+    )
+    folder_btn.pack(side="left")
+
+    # Colocar la toolbar en el header (y asegurarla arriba)
+    header._toolbar_win = header._canvas.create_window(10, 10, window=toolbar, anchor="nw")
+    header._canvas.update_idletasks()
+    header._canvas.tag_raise(header._toolbar_win)
+    # Si el header se re-dibuja, vuelve a poner la toolbar arriba
+    header.bind("<Configure>", lambda e: header._canvas.tag_raise(header._toolbar_win), add="+")
+
+    # -------- Footer (centrado) --------
+    footer = tk.Frame(root, bg=BTN_COLOR)
+    footer.pack(side="bottom", fill="x", padx=0, pady=0)
+
+    # Centrado con grid (no mezclar pack en este contenedor)
+    footer.grid_columnconfigure(0, weight=1)   # spacer izq
+    footer.grid_columnconfigure(1, weight=0)   # contenido
+    footer.grid_columnconfigure(2, weight=1)   # spacer der
+
+    # Contenedor centrado
+    center = tk.Frame(footer, bg=BTN_COLOR)
+    center.grid(row=0, column=1, pady=8)
+
+    # --- Botonera (centrada) ---
+    buttons_wrap = tk.Frame(center, bg=BTN_COLOR)   # hijo de center
+    buttons_wrap.pack(side="left", padx=8)
+    gridpad = dict(padx=6, pady=0)
+
+    # Función para elegir el tamaño de ícono según la altura de la ventana
+    def _icon_size():
+        h = root.winfo_height()
+        if h >= 900: return 60
+        if h >= 700: return 48
+        if h >= 600: return 40
+        if h >= 500: return 30
+        if h >= 400: return 24
+        return 20
+
+    def _get_icon(name):
+        size = _icon_size()
+        path = os.path.join("assets", f"{name}{size}px.png")
+        try:
+            img = Image.open(path).convert("RGBA")
+            return ImageTk.PhotoImage(img)
+        except Exception:
+            return None
+
+    live_icon = _get_icon("live")
+    cam_icon = _get_icon("cam")
+
+    wr, state.btn_switch_timelapse = outlined_button(buttons_wrap, "▶ Timelapse", lambda: toggle_timelapse(state))
+    wr.grid(row=0, column=0, **gridpad)
+
+    wr, state.btn_maniobra = outlined_button(buttons_wrap, "▶ Short TL", lambda: toggle_maniobra(state))
+    wr.grid(row=0, column=1, **gridpad)
+
+    # Botón Live solo icono, sin borde ni texto
+    state.btn_switch_trans = tk.Button(
+        buttons_wrap,
+        command=lambda: toggle_transmision(state),
+        image=live_icon if live_icon else None,
+        bd=0, relief="flat", bg=BTN_COLOR, activebackground=BTN_COLOR,
+        width=live_icon.width() if live_icon else 48,
+        height=live_icon.height() if live_icon else 48,
+        highlightthickness=0, cursor="hand2"
+    )
+    state.btn_switch_trans.image = live_icon
+    state.btn_switch_trans.grid(row=0, column=2, **gridpad)
+
+    # Botón Photo solo icono, sin borde ni texto
+    _btn_take = tk.Button(
+        buttons_wrap,
+        command=lambda: take_and_update(state),
+        image=cam_icon if cam_icon else None,
+        bd=0, relief="flat", bg=BTN_COLOR, activebackground=BTN_COLOR,
+        width=cam_icon.width() if cam_icon else 48,
+        height=cam_icon.height() if cam_icon else 48,
+        highlightthickness=0, cursor="hand2"
+    )
+    _btn_take.image = cam_icon
+    _btn_take.grid(row=0, column=3, **gridpad)
+
+    # --- Status + logo (centrados junto a la botonera) ---
+    status_box = tk.Frame(center, bg="black", bd=0, highlightthickness=1, highlightbackground="#333")
+    status_box.pack(side="left", padx=12)
+
+    state.lbl_status_transmision = tk.Label(status_box, text="Live: STOPPED", bg="black", fg="#a6ffa6", font=("Arial", 11, "bold"))
     state.lbl_status_transmision.pack(anchor="w", padx=10, pady=2)
-    state.lbl_status_timelapse = tk.Label(status_box, text="Timelapse: DETENIDO", bg="black", fg="#a6ffa6", font=("Arial", 11, "bold"))
+    state.lbl_status_timelapse = tk.Label(status_box, text="Timelapse: STOPPED", bg="black", fg="#a6ffa6", font=("Arial", 11, "bold"))
     state.lbl_status_timelapse.pack(anchor="w", padx=10, pady=2)
-    state.lbl_status_maniobra = tk.Label(status_box, text="Maniobra: INACTIVA", bg="black", fg="#a6ffa6", font=("Arial", 11, "bold"))
+    state.lbl_status_maniobra = tk.Label(status_box, text="Short: INACTIVE", bg="black", fg="#a6ffa6", font=("Arial", 11, "bold"))
     state.lbl_status_maniobra.pack(anchor="w", padx=10, pady=2)
-    state.lbl_status_general = tk.Label(status_box, text="Listo", bg="black", fg="#e0e0e0", font=("Arial", 10))
+    state.lbl_status_general = tk.Label(status_box, text="Ready", bg="black", fg="#e0e0e0", font=("Arial", 10))
     state.lbl_status_general.pack(anchor="w", padx=10, pady=4)
 
+    lbl_company = None
+
     company_logo = None
+    
     try:
         if os.path.exists(COMPANY_LOGO_PATH):
             img = Image.open(COMPANY_LOGO_PATH).convert("RGBA")
@@ -388,20 +536,65 @@ def build_main_window(root: tk.Tk):
         print(f"[FOOTER LOGO] Error: {e}")
 
     if company_logo:
-        lbl_company = tk.Label(footer, image=company_logo, bg=BTN_COLOR)
+        lbl_company = tk.Label(center, image=company_logo, bg=BTN_COLOR)
         lbl_company.image = company_logo
-        # pegado a la derecha del cuadro de estado (no al borde de la ventana)
-        lbl_company.pack(side="left", padx=8, pady=8)
+        lbl_company.pack(side="left", padx=12)
 
-    # Inicialización de carpetas y estado inicial
+    # --- Layout responsivo del footer (apilar o en línea) ---
+    def _layout_footer(_evt=None):
+        w = root.winfo_width()
+
+        # Limpiar empaques actuales dentro de 'center'
+        try:
+            buttons_wrap.pack_forget()
+        except Exception:
+            pass
+        try:
+            status_box.pack_forget()
+        except Exception:
+            pass
+        try:
+            if lbl_company is not None:
+                lbl_company.pack_forget()
+        except Exception:
+            pass
+
+        # Vista estrecha: apilar en vertical
+        if w < 900:
+            buttons_wrap.pack(side="top", pady=(0, 6))
+            status_box.pack(side="top", pady=(0, 6))
+            if lbl_company is not None:
+                lbl_company.pack(side="top", pady=(0, 6))
+        else:
+            # Vista amplia: en línea (centrado porque 'center' está en la columna 1)
+            buttons_wrap.pack(side="left", padx=8)
+            status_box.pack(side="left", padx=12)
+            if lbl_company is not None:
+                lbl_company.pack(side="left", padx=12)
+
+    # Aplicar ahora y en cada resize
+   
+    
+
+    root.update_idletasks()
+    _layout_footer()
+        # Footer fijo y mínimos
+    footer.update_idletasks()
+    footer.configure(height=footer.winfo_reqheight())
+    footer.pack_propagate(False)
+    min_w = max(MIN_APP_W, header.winfo_reqwidth(), footer.winfo_reqwidth())
+    min_h = max(MIN_APP_H, header.winfo_reqheight() + 120 + footer.winfo_reqheight())
+    root.minsize(min_w, min_h)
+
+    root.bind("<Configure>", _layout_footer)
+
+    # --- Inicialización y cierre ---
     _ensure_initial_dirs(state)
-    update_main_image(state)
-    update_stream_ui(state); update_timelapse_ui(state); update_maniobra_ui(state)
+    root.after(150, lambda: update_main_image(state))
 
-    # Sincronización a Drive periódica
+    update_stream_ui(state); update_timelapse_ui(state); update_maniobra_ui(state)
     _schedule_sync(state)
 
-    # Cierre
     def on_close():
         state.cfg.set(
             stream_activo=state.streaming,
@@ -411,13 +604,23 @@ def build_main_window(root: tk.Tk):
             cam_index=state.cam_index
         )
         try:
-            camera_manager.stop_stream(); camera_manager.shutdown()
+            camera_manager.stop_stream()
+            camera_manager.shutdown()
         except Exception:
             pass
         root.destroy()
-    root.protocol("WM_DELETE_WINDOW", on_close)
+
+    # Cierre solo con Shift+Q (bloquear cierre normal)
+    root.protocol("WM_DELETE_WINDOW", lambda: None)
+    root.bind_all('<Alt-F4>', lambda e: 'break')
+    root.bind_all('<Shift-q>', lambda _e: on_close())
+    root.bind_all('<Shift-Q>', lambda _e: on_close())
 
     return state
+
+
+
+
 
 
 # =========================
@@ -522,22 +725,39 @@ def _resume_stream_if_marked(state: AppState):
 # Imagen principal
 # =========================
 def _get_last_photo(state: AppState):
-    if not state.photo_dir or not os.path.exists(state.photo_dir): return None
-    fotos = sorted([f for f in os.listdir(state.photo_dir) if f.lower().endswith((".jpg",".jpeg",".png"))])
-    return os.path.join(state.photo_dir, fotos[-1]) if fotos else None
+    if not state.photo_dir or not os.path.exists(state.photo_dir):
+        return None
+    fotos = [
+        os.path.join(state.photo_dir, f)
+        for f in os.listdir(state.photo_dir)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ]
+    if not fotos:
+        return None
+    fotos.sort(key=lambda p: os.path.getmtime(p))
+    return fotos[-1]
+
 
 
 def update_main_image(state: AppState):
-    if state.image_panel is None: return
+    if state.image_panel is None:
+        return
     try:
         last_photo = _get_last_photo(state)
         if last_photo and os.path.exists(last_photo):
             img = Image.open(last_photo).convert("RGB")
+        elif COMPANY_LOGO_PATH and os.path.exists(COMPANY_LOGO_PATH):
+            # PNG con posible transparencia
+            img = Image.open(COMPANY_LOGO_PATH).convert("RGBA")
         else:
+            # Fallback final visible
             img = Image.new("RGB", (IMG_MIN_W, IMG_MIN_H), (64, 64, 64))
+
         state.image_panel.set_image(img)
     except Exception as e:
         set_status(state)(f"Error mostrando imagen: {e}")
+
+
 
 
 # =========================
@@ -876,3 +1096,516 @@ def _sync_photos(state: AppState):
 def _schedule_sync(state: AppState):
     _sync_photos(state)
     state.root.after(60_000, lambda: _schedule_sync(state))  # cada 60s
+def open_gallery_window(state: AppState):
+    import queue, threading, calendar
+    from datetime import datetime, date
+
+    # Solo una galería a la vez
+    if hasattr(state, "gallery_win") and state.gallery_win is not None:
+        try:
+            if tk.Toplevel.winfo_exists(state.gallery_win):
+                state.gallery_win.deiconify()
+                state.gallery_win.lift()
+                return
+        except Exception:
+            state.gallery_win = None
+
+    if not state.photo_dir or not os.path.isdir(state.photo_dir):
+        messagebox.showerror("Carpeta", "La carpeta de fotos no está configurada o no existe.")
+        return
+
+    # ---------- Ventana sin contorno + al frente + centrada ----------
+    win = tk.Toplevel(state.root)
+    set_icon(win)
+    win.overrideredirect(True)
+    win.attributes("-topmost", True)
+    win.configure(bg=BG_COLOR)
+    state.gallery_win = win
+
+    W, H = 1000, 680
+    try:
+        sw, sh = state.root.winfo_screenwidth(), state.root.winfo_screenheight()
+        x, y = (sw - W) // 2, (sh - H) // 2
+    except Exception:
+        x, y = 120, 80
+    win.geometry(f"{W}x{H}+{x}+{y}")
+
+    # ---------- Barra de título personalizada ----------
+    titlebar = tk.Frame(win, bg=BTN_COLOR, height=36)
+    titlebar.pack(fill="x")
+    tk.Label(titlebar, text="Gallery", bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
+             font=("Arial", 12, "bold")).pack(side="left", padx=10)
+
+    _drag = {"x": 0, "y": 0}
+    def _start_drag(e): _drag.update(x=e.x, y=e.y)
+    def _do_drag(e):
+        try:
+            win.geometry(f"+{win.winfo_x() + e.x - _drag['x']}+{win.winfo_y() + e.y - _drag['y']}")
+        except Exception:
+            pass
+    titlebar.bind("<Button-1>", _start_drag)
+    titlebar.bind("<B1-Motion>", _do_drag)
+
+    # Cierre seguro
+    def _close_now():
+        stop_flag["stop"] = True
+        try:
+            t = worker.get("t")
+            if t and t.is_alive():
+                t.join(timeout=0.6)
+        except Exception:
+            pass
+        _unbind_wheel()
+        if win.winfo_exists():
+            win.destroy()
+        state.gallery_win = None
+
+    tk.Button(titlebar, text="✕", command=_close_now,
+              bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
+              font=("Arial", 12, "bold"), padx=10, pady=2, cursor="hand2"
+             ).pack(side="right", padx=6, pady=4)
+
+    # ---------- Barra de info ----------
+    bar = tk.Frame(win, bg=BG_COLOR); bar.pack(fill="x")
+    tk.Label(bar, text=f"Folder: {state.photo_dir}", bg=BG_COLOR, fg=FG_COLOR
+            ).pack(side="left", padx=10, pady=8)
+    status_lbl = tk.Label(bar, text="", bg=BG_COLOR, fg=FG_COLOR)
+    status_lbl.pack(side="left", padx=10, pady=8)
+
+    # ---------- Filtros (fechas + cantidad) ----------
+    ctrl = tk.Frame(win, bg=BG_COLOR); ctrl.pack(fill="x", pady=(0,4))
+
+    # Helpers: datepicker minimalista
+    def _set_entry_date(var: tk.StringVar, y: int, m: int, d: int):
+        var.set(f"{y:04d}-{m:02d}-{d:02d}")
+
+    def _open_datepicker(anchor_widget: tk.Widget, target_var: tk.StringVar):
+        # pequeño calendario emergente
+        cal = tk.Toplevel(win)
+        cal.overrideredirect(True)
+        cal.attributes("-topmost", True)
+        cal.configure(bg=BG_COLOR)
+
+        # posición junto al widget
+        try:
+            ax = anchor_widget.winfo_rootx()
+            ay = anchor_widget.winfo_rooty() + anchor_widget.winfo_height() + 4
+        except Exception:
+            ax, ay = win.winfo_rootx()+80, win.winfo_rooty()+80
+        cal.geometry(f"+{ax}+{ay}")
+
+        now = datetime.now()
+        state_cal = {"year": now.year, "month": now.month}
+
+        header = tk.Frame(cal, bg=BTN_COLOR); header.pack(fill="x")
+        lbl_title = tk.Label(header, text="", bg=BTN_COLOR, fg=BTN_TEXT_COLOR, font=("Arial", 10, "bold"))
+        lbl_title.pack(side="top", pady=4)
+
+        def _refresh_grid():
+            for w in grid.winfo_children():
+                w.destroy()
+            y = state_cal["year"]; m = state_cal["month"]
+            lbl_title.config(text=f"{calendar.month_name[m]} {y}")
+            # nombres días
+            row = 0
+            for wd in ["Mo","Tu","We","Th","Fr","Sa","Su"]:
+                tk.Label(grid, text=wd, bg=BG_COLOR, fg=FG_COLOR, width=3).grid(row=row, column=["Mo","Tu","We","Th","Fr","Sa","Su"].index(wd))
+            row = 1
+            for week in calendar.monthcalendar(y, m):
+                col = 0
+                for d in week:
+                    if d == 0:
+                        tk.Label(grid, text=" ", bg=BG_COLOR, fg=FG_COLOR, width=3).grid(row=row, column=col)
+                    else:
+                        def _mk_cmd(dd=d, yy=y, mm=m):
+                            return lambda: (_set_entry_date(target_var, yy, mm, dd), cal.destroy())
+                        tk.Button(grid, text=str(d), command=_mk_cmd(),
+                                  bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0, width=3).grid(row=row, column=col, padx=1, pady=1)
+                    col += 1
+                row += 1
+
+        def _prev_month():
+            m = state_cal["month"] - 1
+            y = state_cal["year"]
+            if m < 1:
+                m = 12; y -= 1
+            state_cal.update(month=m, year=y); _refresh_grid()
+
+        def _next_month():
+            m = state_cal["month"] + 1
+            y = state_cal["year"]
+            if m > 12:
+                m = 1; y += 1
+            state_cal.update(month=m, year=y); _refresh_grid()
+
+        tk.Button(header, text="◀", command=_prev_month, bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0, width=3
+                 ).pack(side="left", padx=6)
+        tk.Button(header, text="▶", command=_next_month, bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0, width=3
+                 ).pack(side="right", padx=6)
+
+        grid = tk.Frame(cal, bg=BG_COLOR); grid.pack(padx=6, pady=6)
+        _refresh_grid()
+
+        # cerrar si pierde foco
+                # --- Cerrar el calendario si hace click fuera / ESC ---
+        def _destroy_cal():
+            try: win.unbind_all("<Button-1>")
+            except Exception: pass
+            try: cal.destroy()
+            except Exception: pass
+
+        # Cerrar si pierde foco (cuando aplica)
+        cal.bind("<FocusOut>", lambda _e: _destroy_cal())
+
+        # Cerrar con ESC
+        cal.bind("<Escape>", lambda _e: _destroy_cal())
+
+        # Cerrar al hacer click fuera del popup
+        def _on_click_away(e):
+            if not cal.winfo_exists():
+                return
+            # ¿Click fuera del rectángulo del calendario?
+            cx, cy = cal.winfo_rootx(), cal.winfo_rooty()
+            cw, ch = cal.winfo_width(), cal.winfo_height()
+            if not (cx <= e.x_root <= cx + cw and cy <= e.y_root <= cy + ch):
+                _destroy_cal()
+
+        # Registramos el detector de click global mientras el popup está abierto
+        win.bind_all("<Button-1>", _on_click_away, add="+")
+
+
+    # Entradas de fecha
+    tk.Label(ctrl, text="Desde:", bg=BG_COLOR, fg=FG_COLOR).pack(side="left", padx=(10,4))
+    from_var = tk.StringVar()
+    from_ent = tk.Entry(ctrl, textvariable=from_var, width=12); from_ent.pack(side="left")
+    tk.Button(ctrl, text="📅", command=lambda: _open_datepicker(from_ent, from_var),
+              bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0, padx=6).pack(side="left", padx=(2,10))
+
+    tk.Label(ctrl, text="Hasta:", bg=BG_COLOR, fg=FG_COLOR).pack(side="left", padx=(4,4))
+    to_var = tk.StringVar()
+    to_ent = tk.Entry(ctrl, textvariable=to_var, width=12); to_ent.pack(side="left")
+    tk.Button(ctrl, text="📅", command=lambda: _open_datepicker(to_ent, to_var),
+              bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0, padx=6).pack(side="left", padx=(2,10))
+
+    # Límite por defecto: 20
+    tk.Label(ctrl, text="Últimas:", bg=BG_COLOR, fg=FG_COLOR).pack(side="left", padx=(4,4))
+    limit_var = tk.StringVar(value="20")
+    lim_opt = tk.OptionMenu(ctrl, limit_var, "20", "50", "100", "200")
+    lim_opt.configure(bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0, highlightthickness=0, activebackground=BTN_COLOR)
+    lim_opt.pack(side="left", padx=(0,8))
+
+    def _ask_show_all():
+        if messagebox.askyesno("Mostrar todas",
+                               "Se mostrarán todas las imágenes.\nEsta acción puede tardar unos minutos.\n\n¿Continuar?"):
+            _load_async(limit=None)
+
+    tk.Button(ctrl, text="Mostrar todo", command=_ask_show_all,
+              bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
+              font=("Arial", 10, "bold"), padx=10, pady=4
+             ).pack(side="right", padx=6)
+    tk.Button(ctrl, text="Aplicar filtros",
+              command=lambda: _load_async(limit=int(limit_var.get())),
+              bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
+              font=("Arial", 10, "bold"), padx=10, pady=4
+             ).pack(side="right", padx=6)
+
+    # ---------- Área scrollable ----------
+    outer = tk.Frame(win, bg=BG_COLOR); outer.pack(fill="both", expand=True)
+    canvas = tk.Canvas(outer, bg=BG_COLOR, highlightthickness=0, borderwidth=0)
+    vbar = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vbar.set)
+    vbar.pack(side="right", fill="y"); canvas.pack(side="left", fill="both", expand=True)
+    inner = tk.Frame(canvas, bg=BG_COLOR)
+    win_item = canvas.create_window((0, 0), window=inner, anchor="nw")
+    # --- Scroll con rueda del mouse (Win/Mac/Linux) ---
+    def _on_mousewheel(e):
+        try:
+            # Windows / macOS: e.delta = ±120 por “notch”
+            if hasattr(e, "delta") and e.delta:
+                steps = int(-e.delta / 120) or (-1 if e.delta > 0 else 1)
+                canvas.yview_scroll(steps, "units")
+            else:
+                # Linux/X11: Button-4 (arriba), Button-5 (abajo)
+                num = getattr(e, "num", None)
+                if num == 4:
+                    canvas.yview_scroll(-1, "units")
+                elif num == 5:
+                    canvas.yview_scroll(+1, "units")
+        except Exception:
+            pass
+        return "break"
+
+    def _bind_wheel():
+        win.bind_all("<MouseWheel>", _on_mousewheel, add="+")
+        win.bind_all("<Button-4>", _on_mousewheel, add="+")
+        win.bind_all("<Button-5>", _on_mousewheel, add="+")
+    def _unbind_wheel():
+        try:
+            win.unbind_all("<MouseWheel>")
+            win.unbind_all("<Button-4>")
+            win.unbind_all("<Button-5>")
+        except Exception:
+            pass
+
+    _bind_wheel()
+
+
+    # ---------- Grip de redimensionado ----------
+    # --- Grip de redimensionado (esquina inferior derecha, funcional) ---
+    grip = tk.Frame(win, bg=BTN_COLOR, width=26, height=26, cursor="bottom_right_corner")
+    grip.place(relx=1.0, rely=1.0, x=0, y=0, anchor="se")   # pegado a la esquina
+    grip.lift()  # asegúralo por encima del canvas
+
+    # Decoración del grip (opcional)
+    g_label = tk.Label(grip, text="◢", bg=BTN_COLOR, fg=BTN_TEXT_COLOR, font=("Arial", 11, "bold"))
+    g_label.place(relx=0.5, rely=0.5, anchor="center")
+
+    _resize = {"x":0,"y":0,"w":W,"h":H, "drag": False}
+
+    def _start_resize(e):
+        _resize.update(x=e.x_root, y=e.y_root, w=win.winfo_width(), h=win.winfo_height(), drag=True)
+        # Mientras arrastro, escucho el movimiento globalmente
+        win.bind_all("<Motion>", _do_resize, add="+")
+        win.bind_all("<ButtonRelease-1>", _stop_resize, add="+")
+        return "break"
+
+    def _do_resize(e):
+        if not _resize["drag"]:
+            return
+        dx = e.x_root - _resize["x"]; dy = e.y_root - _resize["y"]
+        new_w = max(720, _resize["w"] + dx)
+        new_h = max(480, _resize["h"] + dy)
+        win.geometry(f"{int(new_w)}x{int(new_h)}+{win.winfo_x()}+{win.winfo_y()}")
+        try:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _stop_resize(e=None):
+        _resize["drag"] = False
+        try:
+            win.unbind_all("<Motion>")
+            win.unbind_all("<ButtonRelease-1>")
+        except Exception:
+            pass
+
+    # Binds en el frame y también en su hijo (por si clickeas el icono)
+    for w in (grip, g_label):
+        w.bind("<Button-1>", _start_resize)
+
+
+    # ---------- Loader asíncrono seguro ----------
+    thumb_refs = []
+    COLS = 4
+    BATCH_UI = 16
+
+    q = queue.Queue(maxsize=64)
+    worker = {"t": None}
+    stop_flag = {"stop": False}
+    prog = {"done": 0, "total": 0}
+    grid_state = {"count": 0}
+
+    def _widget_exists(w):
+        try:
+            return bool(w.winfo_exists())
+        except Exception:
+            return False
+
+    def _open_file(p: str):
+        try:
+            if sys.platform == "win32":
+                os.startfile(p)
+            elif sys.platform == "darwin":
+                import subprocess; subprocess.Popen(["open", p])
+            else:
+                import subprocess; subprocess.Popen(["xdg-open", p])
+        except Exception as e:
+            messagebox.showerror("Abrir", f"No se pudo abrir la imagen:\n{e}")
+
+    def _clear_grid():
+        if not (_widget_exists(inner) and _widget_exists(canvas)):
+            return
+        for w in inner.winfo_children():
+            try: w.destroy()
+            except Exception: pass
+        thumb_refs.clear()
+        grid_state["count"] = 0
+        try:
+            canvas.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _on_resize_content(_e=None):
+        if not _widget_exists(canvas): return
+        try:
+            canvas.itemconfig(win_item, width=canvas.winfo_width())
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        except Exception:
+            pass
+
+    inner.bind("<Configure>", _on_resize_content)
+    win.bind("<Configure>", _on_resize_content)
+
+    def _parse_date(s: str) -> date | None:
+        s = (s or "").strip()
+        if not s:
+            return None
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").date()
+        except Exception:
+            messagebox.showwarning("Fecha", f"Formato inválido: {s}\nUsa YYYY-MM-DD (ej. 2025-09-07).")
+            return None
+
+    def _producer(files: list[str]):
+        from PIL import Image, ImageOps
+        try:
+            for p in files:
+                if stop_flag["stop"]:
+                    break
+                try:
+                    im = Image.open(p)
+                    try: im = ImageOps.exif_transpose(im)
+                    except Exception: pass
+                    im.draft("RGB", (640, 480))
+                    im = im.convert("RGB")
+                    th = ImageOps.fit(im, (240, 180), Image.LANCZOS)
+                    q.put((p, th), timeout=1)
+                except Exception:
+                    continue
+        finally:
+            try: q.put(None, timeout=1)
+            except Exception: pass
+
+    def _drain_queue(show_n: int, total_all: int, showing_all: bool):
+        if stop_flag["stop"] or not (_widget_exists(win) and _widget_exists(inner) and _widget_exists(canvas)):
+            return
+        added = 0
+        while added < BATCH_UI:
+            try:
+                item = q.get_nowait()
+            except Exception:
+                item = "empty"
+            if item == "empty":
+                break
+            if item is None:
+                msg = (f"Listo. Mostrando {total_all} imagen(es)." if showing_all
+                       else f"Listo. Mostrando últimas {show_n} de {total_all}.")
+                status_lbl.config(text=msg)
+                return
+            p, pil_thumb = item
+            try:
+                tkimg = ImageTk.PhotoImage(pil_thumb)
+            except Exception:
+                continue
+
+            card = tk.Frame(inner, bg=BG_COLOR, bd=0, highlightthickness=1, highlightbackground="#333")
+            lbl = tk.Label(card, image=tkimg, bg=BG_COLOR)
+            lbl.image = tkimg
+            thumb_refs.append(tkimg)
+            lbl.pack()
+
+            fname = os.path.basename(p)
+            tk.Label(card, text=fname, bg=BG_COLOR, fg=FG_COLOR, wraplength=240
+                     ).pack(fill="x", padx=6, pady=4)
+            tk.Button(card, text="Open", command=lambda p=p: _open_file(p),
+                      bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
+                      font=("Arial", 10, "bold"), padx=8, pady=4
+                     ).pack(pady=(0, 8))
+
+            i = grid_state["count"]; r, c = divmod(i, COLS)
+            card.grid(row=r, column=c, padx=8, pady=8, sticky="n")
+            grid_state["count"] += 1
+            added += 1
+            prog["done"] += 1
+
+        # continuar drenando sin bloquear
+        if _widget_exists(win):
+            try:
+                status_lbl.config(text=f"Cargando miniaturas… {prog['done']}/{prog['total']}")
+            except Exception:
+                pass
+            win.after(20, lambda: _drain_queue(show_n, total_all, showing_all))
+
+    def _load_async(limit: int | None):
+        # reinicio/limpieza
+        stop_flag["stop"] = True
+        t = worker.get("t")
+        if t and t.is_alive():
+            try: t.join(timeout=0.4)
+            except Exception: pass
+        stop_flag["stop"] = False
+        while not q.empty():
+            try: q.get_nowait()
+            except Exception: break
+        _clear_grid()
+
+        # listar archivos
+        exts = (".jpg", ".jpeg", ".png")
+        try:
+            files_all = [os.path.join(state.photo_dir, f)
+                         for f in os.listdir(state.photo_dir)
+                         if f.lower().endswith(exts)]
+        except Exception as e:
+            status_lbl.config(text=f"Error leyendo carpeta: {e}")
+            return
+
+        total_all = len(files_all)
+        if total_all == 0:
+            status_lbl.config(text="No hay imágenes en esta carpeta.")
+            if _widget_exists(inner):
+                tk.Label(inner, text="No hay imágenes en esta carpeta.", bg=BG_COLOR, fg=FG_COLOR,
+                         font=("Arial", 12)).pack(pady=20)
+                try:
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+                except Exception:
+                    pass
+            return
+
+        files_all.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+
+        # Filtro fechas
+        df = _parse_date(from_var.get())
+        dt = _parse_date(to_var.get())
+        if df or dt:
+            _filtered = []
+            for p in files_all:
+                try:
+                    d = datetime.fromtimestamp(os.path.getmtime(p)).date()
+                except Exception:
+                    continue
+                if df and d < df:   continue
+                if dt and d > dt:   continue
+                _filtered.append(p)
+            files_all = _filtered
+            total_all = len(files_all)
+
+        if total_all == 0:
+            status_lbl.config(text="Sin resultados para el filtro.")
+            if _widget_exists(inner):
+                tk.Label(inner, text="Sin resultados para el filtro.", bg=BG_COLOR, fg=FG_COLOR,
+                         font=("Arial", 12)).pack(pady=20)
+            return
+
+        if limit is None:
+            files = files_all
+            showing_all = True
+            show_n = len(files_all)
+        else:
+            files = files_all[:max(1, int(limit))]
+            showing_all = False
+            show_n = len(files)
+
+        prog["done"] = 0
+        prog["total"] = show_n
+        status_lbl.config(text=f"Cargando miniaturas… 0/{prog['total']}")
+
+        worker["t"] = threading.Thread(target=_producer, args=(files,), daemon=True)
+        worker["t"].start()
+        win.after(10, lambda: _drain_queue(show_n, total_all, showing_all))
+
+    # Interceptar cierre del sistema de ventanas
+    win.protocol("WM_DELETE_WINDOW", _close_now)
+
+    # Carga por defecto: últimas 20
+    _load_async(limit=20)

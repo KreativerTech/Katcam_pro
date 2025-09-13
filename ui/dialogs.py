@@ -1,6 +1,8 @@
 # ui/dialogs.py
 # -*- coding: utf-8 -*-
 import tkinter as tk
+from tkinter import ttk
+from tkinter import scrolledtext as st
 from tkinter import messagebox
 from config.settings import BG_COLOR, FG_COLOR, BTN_COLOR, BTN_TEXT_COLOR, ICON_PATH
 
@@ -62,93 +64,217 @@ def open_autostart_window(root, on_status):
 
 # ============ INFO (ver y editar) ============
 def open_info_window(root, state=None):
-    """
-    Muestra información de la app y (si hay `state`) datos guardados en la configuración.
-    Incluye un botón para editar la información (requiere `state`).
-    """
     win = tk.Toplevel(root)
     set_icon(win)
-    win.title("Información")
+    win.title("Information")
     win.configure(bg=BG_COLOR)
-    win.geometry("580x460")
+    win.overrideredirect(True)
+    win.resizable(True, True)
+    win.lift()
+    win.attributes("-topmost", True)
 
-    frm = tk.Frame(win, bg=BG_COLOR)
-    frm.pack(fill="both", expand=True, padx=16, pady=16)
+    # Barra de título personalizada
+    titlebar = tk.Frame(win, bg=BTN_COLOR, height=36)
+    titlebar.pack(fill="x")
+    tk.Label(titlebar, text="Information", bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
+             font=("Arial", 12, "bold")).pack(side="left", padx=10)
 
-    tk.Label(frm, text="Katcam - Información", font=("Arial", 16, "bold"),
-             bg=BG_COLOR, fg=FG_COLOR).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+    def _close_info():
+        if win.winfo_exists():
+            win.destroy()
 
-    # Valores seguros por defecto si no hay state
-    cfg = getattr(state, "cfg", None)
-    data = getattr(cfg, "data", {}) if cfg else {}
+    tk.Button(titlebar, text="✕", command=_close_info,
+              bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
+              font=("Arial", 12, "bold"), padx=10, pady=2, cursor="hand2"
+             ).pack(side="right", padx=6, pady=4)
 
-    version      = data.get("version", "1.0.0")
-    autor        = data.get("autor", "KreativerTech")
-    soporte      = data.get("soporte", "support@kreativer.tech")
+    # Grip para redimensionar (igual que gallery)
+    grip = tk.Label(win, bg=BTN_COLOR, cursor="bottom_right_corner")
+    def _place_grip():
+        grip.place(relx=1.0, rely=1.0, anchor="se", width=18, height=18)
+        grip.lift()
+    def _resize_start(e):
+        grip._drag = (e.x_root, e.y_root, win.winfo_width(), win.winfo_height())
+    def _resize_drag(e):
+        x0, y0, w0, h0 = grip._drag
+        dx, dy = e.x_root - x0, e.y_root - y0
+        win.geometry(f"{max(320, w0+dx)}x{max(240, h0+dy)}")
+        _place_grip()
+    grip.bind("<Button-1>", _resize_start)
+    grip.bind("<B1-Motion>", _resize_drag)
+    win.bind("<Configure>", lambda e: _place_grip())
+    # Coloca el grip después de todo el layout
+    win.after(10, _place_grip)
 
-    camera_id    = data.get("camera_id", "")
-    cliente      = data.get("cliente", "")
-    obra         = data.get("obra", "")
-    ubicacion    = data.get("ubicacion", "")
-    contacto     = data.get("contacto", "")  # Mantengo tu clave actual
-    email        = data.get("email", "")
-    telefono     = data.get("telefono", "")
-    gps_lat      = data.get("gps_lat", "")
-    gps_lon      = data.get("gps_lon", "")
-    photo_dir    = data.get("photo_dir", getattr(state, "photo_dir", ""))
-    drive_dir    = data.get("drive_dir", getattr(state, "drive_dir", ""))
+    nb = ttk.Notebook(win)
+    nb.pack(fill="both", expand=True)
 
-    row = 1
-    def add_row(label, value):
-        nonlocal row
-        tk.Label(frm, text=label, bg=BG_COLOR, fg=FG_COLOR
-                ).grid(row=row, column=0, sticky="e", padx=8, pady=4)
-        tk.Label(frm, text=value or "-", bg=BG_COLOR, fg=BTN_COLOR,
-                 font=("Arial", 11, "bold")).grid(row=row, column=1, sticky="w", padx=8, pady=4)
-        row += 1
+    # Ajustar tamaño mínimo y al contenido real
+    win.update_idletasks()
+    # Aumenta el tamaño mínimo y corrige área negra inicial
+    min_w, min_h = 700, 480
+    req_w = max(min_w, win.winfo_reqwidth())
+    req_h = max(min_h, win.winfo_reqheight())
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    # Limita el tamaño máximo a 90% de la pantalla
+    max_w, max_h = int(sw * 0.9), int(sh * 0.9)
+    ww = min(req_w, max_w)
+    wh = min(req_h, max_h)
+    x, y = (sw - ww) // 2, (sh - wh) // 2
+    win.geometry(f"{ww}x{wh}+{x}+{y}")
 
-    add_row("Versión:", version)
-    add_row("Autor:", autor)
-    add_row("Soporte:", soporte)
+    # --- helpers ---
+    def _make_scrollable_tab(title):
+        tab = tk.Frame(nb, bg=BG_COLOR)
+        nb.add(tab, text=title)
 
-    tk.Label(frm, text="Proyecto / Sitio", font=("Arial", 14, "bold"),
-             bg=BG_COLOR, fg=FG_COLOR).grid(row=row, column=0, columnspan=2, sticky="w", pady=(12, 6)); row += 1
-    add_row("Nombre del equipo:", camera_id)
-    add_row("Cliente:", cliente)
-    add_row("Obra:", obra)
-    add_row("Ubicación:", ubicacion)
-    add_row("Contacto:", contacto)
-    if email or telefono:
-        add_row("Email:", email)
-        add_row("Teléfono:", telefono)
-    if gps_lat or gps_lon:
-        add_row("GPS (lat, lon):", f"{gps_lat} , {gps_lon}")
+        outer = tk.Frame(tab, bg=BG_COLOR)
+        outer.pack(fill="both", expand=True)
 
-    tk.Label(frm, text="Carpetas", font=("Arial", 14, "bold"),
-             bg=BG_COLOR, fg=FG_COLOR).grid(row=row, column=0, columnspan=2, sticky="w", pady=(12, 6)); row += 1
-    add_row("Fotos:", photo_dir)
-    add_row("Google Drive:", drive_dir)
+        canvas = tk.Canvas(outer, bg=BG_COLOR, highlightthickness=0, borderwidth=0)
+        vbar = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
 
-    def _open_edit():
-        if state is None:
-            messagebox.showinfo("Editar", "Abre esta ventana desde la app principal con un estado válido.")
-            return
-        win.destroy()
-        open_edit_client_info(root, state)
+        inner = tk.Frame(canvas, bg=BG_COLOR)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
 
-    tk.Button(frm, text="Editar información…", command=_open_edit,
+        def _on_resize(_e=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            # fijar ancho del inner para evitar recortes
+            try:
+                canvas.itemconfig(1, width=canvas.winfo_width())
+            except Exception:
+                pass
+
+        inner.bind("<Configure>", _on_resize)
+        tab.bind("<Configure>", _on_resize)
+        return inner
+
+    def add_row(parent, r, label, value, bold=False):
+        tk.Label(parent, text=label, bg=BG_COLOR, fg=FG_COLOR).grid(
+            row=r, column=0, sticky="e", padx=10, pady=5
+        )
+        tk.Label(parent, text=value or "-", bg=BG_COLOR,
+                 fg=BTN_COLOR, font=("Arial", 11, "bold") if bold else ("Arial", 11)).grid(
+            row=r, column=1, sticky="w", padx=10, pady=5
+        )
+
+    # ===== Tab 1: Configuración =====
+    cfg_tab = _make_scrollable_tab("Configuración")
+
+    cfg = getattr(getattr(state, "cfg", None), "data", {}) if state else {}
+    # valores de config / estado (sin GPS)
+    camera_id = cfg.get("camera_id", "")
+    cliente   = cfg.get("cliente", "")
+    obra      = cfg.get("obra", "")
+    ubicacion = cfg.get("ubicacion", "")
+    contacto  = cfg.get("contacto", "")
+    email     = cfg.get("email", "")
+    telefono  = cfg.get("telefono", "")
+
+    photo_dir = cfg.get("photo_dir", getattr(state, "photo_dir", ""))
+    drive_dir = cfg.get("drive_dir", getattr(state, "drive_dir", ""))
+
+    row = 0
+    tk.Label(cfg_tab, text="Datos del proyecto", font=("Arial", 14, "bold"),
+             bg=BG_COLOR, fg=FG_COLOR).grid(row=row, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6)); row += 1
+    add_row(cfg_tab, row, "Nombre del equipo:", camera_id, bold=True); row += 1
+    add_row(cfg_tab, row, "Cliente:", cliente); row += 1
+    add_row(cfg_tab, row, "Obra:", obra); row += 1
+    add_row(cfg_tab, row, "Ubicación:", ubicacion); row += 1
+    add_row(cfg_tab, row, "Contacto:", contacto); row += 1
+    add_row(cfg_tab, row, "Email:", email); row += 1
+    add_row(cfg_tab, row, "Teléfono:", telefono); row += 1
+
+    tk.Label(cfg_tab, text="Carpetas", font=("Arial", 14, "bold"),
+             bg=BG_COLOR, fg=FG_COLOR).grid(row=row, column=0, columnspan=2, sticky="w", padx=10, pady=(12, 6)); row += 1
+    add_row(cfg_tab, row, "Fotos:", photo_dir); row += 1
+    add_row(cfg_tab, row, "Google Drive:", drive_dir); row += 1
+
+    # Botón editar
+    def _refresh_and_header():
+        # refrescar datos del tab y avisar a la main window
+        for w in cfg_tab.grid_slaves():
+            w.destroy()
+        # reconstruir (reutilizamos la propia función para brevedad)
+        nonlocal camera_id, cliente, obra, ubicacion, contacto, email, telefono, photo_dir, drive_dir
+        cfg = state.cfg.data
+        camera_id = cfg.get("camera_id", "")
+        cliente   = cfg.get("cliente", "")
+        obra      = cfg.get("obra", "")
+        ubicacion = cfg.get("ubicacion", "")
+        contacto  = cfg.get("contacto", "")
+        email     = cfg.get("email", "")
+        telefono  = cfg.get("telefono", "")
+        photo_dir = cfg.get("photo_dir", getattr(state, "photo_dir", ""))
+        drive_dir = cfg.get("drive_dir", getattr(state, "drive_dir", ""))
+
+        r = 0
+        tk.Label(cfg_tab, text="Datos del proyecto", font=("Arial", 14, "bold"),
+                 bg=BG_COLOR, fg=FG_COLOR).grid(row=r, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 6)); r += 1
+        add_row(cfg_tab, r, "Nombre del equipo:", camera_id, bold=True); r += 1
+        add_row(cfg_tab, r, "Cliente:", cliente); r += 1
+        add_row(cfg_tab, r, "Obra:", obra); r += 1
+        add_row(cfg_tab, r, "Ubicación:", ubicacion); r += 1
+        add_row(cfg_tab, r, "Contacto:", contacto); r += 1
+        add_row(cfg_tab, r, "Email:", email); r += 1
+        add_row(cfg_tab, r, "Teléfono:", telefono); r += 1
+        tk.Label(cfg_tab, text="Carpetas", font=("Arial", 14, "bold"),
+                 bg=BG_COLOR, fg=FG_COLOR).grid(row=r, column=0, columnspan=2, sticky="w", padx=10, pady=(12, 6)); r += 1
+        add_row(cfg_tab, r, "Fotos:", photo_dir); r += 1
+        add_row(cfg_tab, r, "Google Drive:", drive_dir); r += 1
+        tk.Button(cfg_tab, text="Editar información…",
+                  command=lambda: open_edit_client_info(root, state, on_saved=_refresh_and_header),
+                  bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
+                  font=("Arial", 12, "bold"), padx=12, pady=8
+                 ).grid(row=r, column=0, columnspan=2, sticky="w", padx=10, pady=(12, 10))
+        try:
+            root.event_generate("<<INFO_UPDATED>>", when="tail")
+        except Exception:
+            pass
+
+    tk.Button(cfg_tab, text="Editar información…",
+              command=lambda: open_edit_client_info(root, state, on_saved=_refresh_and_header),
               bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
               font=("Arial", 12, "bold"), padx=12, pady=8
-             ).grid(row=row, column=0, columnspan=2, sticky="w", padx=8, pady=(12, 0))
+             ).grid(row=row, column=0, columnspan=2, sticky="w", padx=10, pady=(12, 10))
+
+    # ===== Tab 2: Acerca de =====
+    about_tab = tk.Frame(nb, bg=BG_COLOR)
+    nb.add(about_tab, text="Acerca de")
+
+    data = getattr(getattr(state, "cfg", None), "data", {}) if state else {}
+    version = data.get("version", "1.0.0")
+    autor   = data.get("autor", "KreativerTech")
+    soporte = data.get("soporte", "support@kreativer.tech")
+
+    tk.Label(about_tab, text="Información general", font=("Arial", 14, "bold"),
+             bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=12, pady=(12, 6))
+    tk.Label(about_tab, text=f"Versión: {version}", bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=12, pady=3)
+    tk.Label(about_tab, text=f"Autor: {autor}", bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=12, pady=3)
+    tk.Label(about_tab, text=f"Soporte: {soporte}", bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=12, pady=3)
+
+    # ===== Tab 3: Map (placeholder) =====
+    map_tab = tk.Frame(nb, bg=BG_COLOR)
+    nb.add(map_tab, text="Map")
+    tk.Label(map_tab, text="Mapa (próximamente)",
+             font=("Arial", 14, "bold"), bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=12, pady=(12,6))
+    tk.Label(map_tab,
+             text="Este panel mostrará la ubicación estimada por telemetría.\n"
+                  "Aún no hay fuente de telemetría configurada.",
+             bg=BG_COLOR, fg=FG_COLOR, justify="left").pack(anchor="w", padx=12, pady=4)
 
 
-def open_edit_client_info(root, state):
+
+def open_edit_client_info(root, state, on_saved=None):
     """Ventana para EDITAR info de cliente/obra/equipo (se guarda en ConfigStore)."""
     win = tk.Toplevel(root)
     set_icon(win)
     win.title("Editar Información")
     win.configure(bg=BG_COLOR)
-    win.geometry("600x540")
+    win.geometry("600x520")
 
     frm = tk.Frame(win, bg=BG_COLOR)
     frm.pack(fill="both", expand=True, padx=16, pady=16)
@@ -176,34 +302,36 @@ def open_edit_client_info(root, state):
     v_telefono  = mk_row(row, "Teléfono:", "telefono"); row+=1
     v_camid     = mk_row(row, "Nombre del equipo:", "camera_id"); row+=1
 
-    tk.Label(frm, text="Coordenadas GPS (opcional)", font=("Arial", 12, "bold"),
-             bg=BG_COLOR, fg=FG_COLOR).grid(row=row, column=0, columnspan=2, sticky="w", pady=(10,4)); row+=1
-    v_lat       = mk_row(row, "Latitud:", "gps_lat", width=18); row+=1
-    v_lon       = mk_row(row, "Longitud:", "gps_lon", width=18); row+=1
-
     def _save():
-        # Guardar en config
-        state.cfg.set(
-            cliente=v_cliente.get(),
-            obra=v_obra.get(),
-            ubicacion=v_ubicacion.get(),
-            contacto=v_contacto.get(),
-            email=v_email.get(),
-            telefono=v_telefono.get(),
-            camera_id=v_camid.get(),
-            gps_lat=v_lat.get(),
-            gps_lon=v_lon.get()
-        )
-        messagebox.showinfo("Guardado", "Información actualizada.")
         try:
-            # Notificar a la ventana principal por si quiere refrescar encabezado u otros
-            root.event_generate("<<INFO_UPDATED>>", when="tail")
-        except Exception:
-            pass
-        win.destroy()
+            state.cfg.set(
+                cliente=v_cliente.get(),
+                obra=v_obra.get(),
+                ubicacion=v_ubicacion.get(),
+                contacto=v_contacto.get(),
+                email=v_email.get(),
+                telefono=v_telefono.get(),
+                camera_id=v_camid.get(),
+            )
+            messagebox.showinfo("Guardado", "Información actualizada.")
+            try:
+                root.event_generate("<<INFO_UPDATED>>", when="tail")
+            except Exception:
+                pass
+            if callable(on_saved):
+                on_saved()
+            win.destroy()
+        except Exception as e:
+            messagebox.showerror("Guardar", f"Error al guardar:\n{e}")
 
-    tk.Button(win, text="Guardar", command=_save,
+    btns = tk.Frame(win, bg=BG_COLOR)
+    btns.pack(fill="x", padx=16, pady=8)
+    tk.Button(btns, text="Guardar", command=_save,
               bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
               font=("Arial", 12, "bold"), padx=12, pady=8
-             ).pack(pady=(12, 4))
+             ).pack(side="right", padx=6)
+    tk.Button(btns, text="Cancelar", command=win.destroy,
+              bg=BG_COLOR, fg=FG_COLOR, bd=0,
+              font=("Arial", 12), padx=12, pady=8
+             ).pack(side="right", padx=6)
 
