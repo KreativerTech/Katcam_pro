@@ -477,12 +477,34 @@ def build_main_window(root: tk.Tk):
 
     live_icon = _get_icon("live")
     cam_icon = _get_icon("cam")
+    tl_icon = _get_icon("tl")
+    short_icon = _get_icon("s")
 
-    wr, state.btn_switch_timelapse = outlined_button(buttons_wrap, "▶ Timelapse", lambda: toggle_timelapse(state))
-    wr.grid(row=0, column=0, **gridpad)
+    # Botón Timelapse solo icono
+    state.btn_switch_timelapse = tk.Button(
+        buttons_wrap,
+        command=lambda: toggle_timelapse(state),
+        image=tl_icon if tl_icon else None,
+        bd=0, relief="flat", bg=BTN_COLOR, activebackground=BTN_COLOR,
+        width=tl_icon.width() if tl_icon else 48,
+        height=tl_icon.height() if tl_icon else 48,
+        highlightthickness=0, cursor="hand2"
+    )
+    state.btn_switch_timelapse.image = tl_icon
+    state.btn_switch_timelapse.grid(row=0, column=0, **gridpad)
 
-    wr, state.btn_maniobra = outlined_button(buttons_wrap, "▶ Short TL", lambda: toggle_maniobra(state))
-    wr.grid(row=0, column=1, **gridpad)
+    # Botón Short TL solo icono
+    state.btn_maniobra = tk.Button(
+        buttons_wrap,
+        command=lambda: toggle_maniobra(state),
+        image=short_icon if short_icon else None,
+        bd=0, relief="flat", bg=BTN_COLOR, activebackground=BTN_COLOR,
+        width=short_icon.width() if short_icon else 48,
+        height=short_icon.height() if short_icon else 48,
+        highlightthickness=0, cursor="hand2"
+    )
+    state.btn_maniobra.image = short_icon
+    state.btn_maniobra.grid(row=0, column=1, **gridpad)
 
     # Botón Live solo icono, sin borde ni texto
     state.btn_switch_trans = tk.Button(
@@ -577,14 +599,14 @@ def build_main_window(root: tk.Tk):
         except Exception:
             pass
 
-        # Vista estrecha: apilar en vertical
-        if w < 900:
+        # Vista realmente estrecha: apilar en vertical solo si el ancho es menor a 600px
+        if w < 600:
             buttons_wrap.pack(side="top", pady=(0, 6))
             status_box.pack(side="top", pady=(0, 6))
             if lbl_company is not None:
                 lbl_company.pack(side="top", pady=(0, 6))
         else:
-            # Vista amplia: en línea (centrado porque 'center' está en la columna 1)
+            # Vista en línea para 600px o más (incluye 800x600)
             buttons_wrap.pack(side="left", padx=8)
             status_box.pack(side="left", padx=12)
             if lbl_company is not None:
