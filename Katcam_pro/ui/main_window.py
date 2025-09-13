@@ -524,21 +524,39 @@ def build_main_window(root: tk.Tk):
     state.lbl_status_general.pack(anchor="w", padx=10, pady=4)
 
     lbl_company = None
+    company_logo_img = None
 
-    company_logo = None
-    
-    try:
-        if os.path.exists(COMPANY_LOGO_PATH):
+    def _logo_size():
+        h = root.winfo_height()
+        if h >= 900: return (260, 90)
+        if h >= 700: return (220, 80)
+        if h >= 600: return (180, 60)
+        if h >= 500: return (140, 48)
+        if h >= 400: return (100, 36)
+        return (80, 28)
+
+    def _update_company_logo():
+        nonlocal lbl_company, company_logo_img
+        if not os.path.exists(COMPANY_LOGO_PATH):
+            if lbl_company:
+                lbl_company.destroy()
+                lbl_company = None
+            return
+        size = _logo_size()
+        try:
             img = Image.open(COMPANY_LOGO_PATH).convert("RGBA")
-            img = ImageOps.contain(img, (220, 80))
-            company_logo = ImageTk.PhotoImage(img)
-    except Exception as e:
-        print(f"[FOOTER LOGO] Error: {e}")
+            img = ImageOps.contain(img, size)
+            company_logo_img = ImageTk.PhotoImage(img)
+        except Exception as e:
+            print(f"[FOOTER LOGO] Error: {e}")
+            return
+        if lbl_company is None:
+            lbl_company = tk.Label(center, bg=BTN_COLOR)
+            lbl_company.pack(side="left", padx=12)
+        lbl_company.config(image=company_logo_img)
+        lbl_company.image = company_logo_img
 
-    if company_logo:
-        lbl_company = tk.Label(center, image=company_logo, bg=BTN_COLOR)
-        lbl_company.image = company_logo
-        lbl_company.pack(side="left", padx=12)
+    _update_company_logo()
 
     # --- Layout responsivo del footer (apilar o en línea) ---
     def _layout_footer(_evt=None):
@@ -571,6 +589,7 @@ def build_main_window(root: tk.Tk):
             status_box.pack(side="left", padx=12)
             if lbl_company is not None:
                 lbl_company.pack(side="left", padx=12)
+        _update_company_logo()
 
     # Aplicar ahora y en cada resize
    
