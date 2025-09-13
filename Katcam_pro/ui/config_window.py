@@ -45,53 +45,84 @@ class ConfigWindow:
       - GPS: lat/lon.
     """
     def __init__(self, root, state, on_save, on_auto_wb, on_open_driver, on_resolution_change):
-        self.root = root
-        self.state = state
-        self.on_save = on_save
-        self.on_auto_wb = on_auto_wb
-        self.on_open_driver = on_open_driver
-        self.on_resolution_change = on_resolution_change  # firma: on_resolution_change(new_label:str)
+        try:
+            self.root = root
+            self.state = state
+            self.on_save = on_save
+            self.on_auto_wb = on_auto_wb
+            self.on_open_driver = on_open_driver
+            self.on_resolution_change = on_resolution_change  # firma: on_resolution_change(new_label:str)
 
-        self.win = tk.Toplevel(root)
-        set_icon(self.win)
-        self.win.title("Configuración")
-        self.win.configure(bg=BG_COLOR)
-        self.win.geometry("900x640")
-        # Al cerrar, ocultamos para reabrir rápido
-        self.win.protocol("WM_DELETE_WINDOW", lambda: self.win.withdraw())
+            self.win = tk.Toplevel(root)
+            set_icon(self.win)
+            self.win.title("Configuración")
+            self.win.configure(bg=BG_COLOR)
+            self.win.geometry("900x640")
+            self.win.lift()
+            self.win.attributes("-topmost", True)
+            self.win.overrideredirect(True)
 
-        tk.Label(self.win, text="Configuraciones", font=("Arial", 16, "bold"),
-                 bg=BG_COLOR, fg=BTN_COLOR).pack(anchor="w", padx=10, pady=(10, 0))
+            # Barra de título personalizada
+            titlebar = tk.Frame(self.win, bg=BTN_COLOR, height=36)
+            titlebar.pack(fill="x")
+            tk.Label(titlebar, text="Configuración", bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
+                     font=("Arial", 13, "bold")).pack(side="left", padx=10)
 
-        self.notebook = ttk.Notebook(self.win)
-        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+            def _close_config():
+                if self.win.winfo_exists():
+                    self.win.withdraw()
 
-        # ---- Pestañas ----
-        self.tab_cam = tk.Frame(self.notebook, bg=BG_COLOR)
-        self.notebook.add(self.tab_cam, text="Cámara")
-        self._build_tab_camera()
+            tk.Button(titlebar, text="✕", command=_close_config,
+                      bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
+                      font=("Arial", 13, "bold"), padx=8, pady=2, relief="flat", cursor="hand2"
+            ).pack(side="right", padx=8)
 
-        self.tab_tl = tk.Frame(self.notebook, bg=BG_COLOR)
-        self.notebook.add(self.tab_tl, text="Timelapse")
-        self._build_tab_timelapse()
+            # Permitir mover la ventana arrastrando la barra de título
+            _drag = {"x": 0, "y": 0}
+            def _start_drag(e): _drag.update(x=e.x, y=e.y)
+            def _do_drag(e):
+                try:
+                    self.win.geometry(f"+{self.win.winfo_x() + e.x - _drag['x']}+{self.win.winfo_y() + e.y - _drag['y']}")
+                except Exception:
+                    pass
+            for widget in [titlebar] + list(titlebar.winfo_children()):
+                widget.bind("<Button-1>", _start_drag)
+                widget.bind("<B1-Motion>", _do_drag)
 
-        self.tab_mani = tk.Frame(self.notebook, bg=BG_COLOR)
-        self.notebook.add(self.tab_mani, text="Maniobra")
-        self._build_tab_maniobra()
+            tk.Label(self.win, text="Configuraciones", font=("Arial", 16, "bold"),
+                     bg=BG_COLOR, fg=BTN_COLOR).pack(anchor="w", padx=10, pady=(10, 0))
 
-        self.tab_gps = tk.Frame(self.notebook, bg=BG_COLOR)
-        self.notebook.add(self.tab_gps, text="GPS")
-        self._build_tab_gps()
+            self.notebook = ttk.Notebook(self.win)
+            self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Botón Guardar
-        btn_save = tk.Button(
-            self.win, text="Guardar", command=self.on_save,
-            bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
-            font=("Arial", 12, "bold"), padx=12, pady=8
-        )
-        btn_save.pack(pady=(0, 10))
+            # ---- Pestañas ----
+            self.tab_cam = tk.Frame(self.notebook, bg=BG_COLOR)
+            self.notebook.add(self.tab_cam, text="Cámara")
+            self._build_tab_camera()
 
-        self._load_from_state()
+            self.tab_tl = tk.Frame(self.notebook, bg=BG_COLOR)
+            self.notebook.add(self.tab_tl, text="Timelapse")
+            self._build_tab_timelapse()
+
+            self.tab_mani = tk.Frame(self.notebook, bg=BG_COLOR)
+            self.notebook.add(self.tab_mani, text="Maniobra")
+            self._build_tab_maniobra()
+
+            #self.tab_gps = tk.Frame(self.notebook, bg=BG_COLOR)
+            #self.notebook.add(self.tab_gps, text="GPS")
+            #self._build_tab_gps()
+
+            # Botón Guardar
+            btn_save = tk.Button(
+                self.win, text="Guardar", command=self.on_save,
+                bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
+                font=("Arial", 12, "bold"), padx=12, pady=8
+            )
+            btn_save.pack(pady=(0, 10))
+
+            self._load_from_state()
+        except Exception as e:
+            messagebox.showerror("Error de configuración", f"No se pudo abrir la ventana de configuración:\n{e}")
 
     # ---------- Cámara ----------
     def _build_tab_camera(self):
@@ -249,26 +280,7 @@ class ConfigWindow:
                 ).grid(row=row, column=1, sticky="w", padx=6, pady=6)
         row+=1
 
-    # ---------- GPS ----------
-    def _build_tab_gps(self):
-        row = 0
-        tk.Label(self.tab_gps, text="GPS", font=("Arial", 16, "bold"),
-                 bg=BG_COLOR, fg=FG_COLOR).grid(row=row, column=0, columnspan=2, sticky="w", pady=(10, 8)); row+=1
-
-        tk.Label(self.tab_gps, text="Latitud:", bg=BG_COLOR, fg=FG_COLOR
-                ).grid(row=row, column=0, sticky="e", padx=8, pady=6)
-        self.lat_var = tk.StringVar(value=self.state.cfg.data.get("gps_lat",""))
-        tk.Entry(self.tab_gps, textvariable=self.lat_var, width=16
-                ).grid(row=row, column=1, sticky="w", padx=6, pady=6)
-        row+=1
-
-        tk.Label(self.tab_gps, text="Longitud:", bg=BG_COLOR, fg=FG_COLOR
-                ).grid(row=row, column=0, sticky="e", padx=8, pady=6)
-        self.lon_var = tk.StringVar(value=self.state.cfg.data.get("gps_lon",""))
-        tk.Entry(self.tab_gps, textvariable=self.lon_var, width=16
-                ).grid(row=row, column=1, sticky="w", padx=6, pady=6)
-        row+=1
-
+    
     # ---------- Carga inicial ----------
     def _load_from_state(self):
         self._refresh_cams()
@@ -277,12 +289,12 @@ class ConfigWindow:
     def read_all(self):
         """
         Devuelve (en este orden):
-          freq_min, dias_bool_list, hora_inicio, hora_fin,
-          maniobra_duracion_min, maniobra_intervalo_s,
-          photo_res_label, video_res_label,
-          cam_index, gps_lat, gps_lon
+        freq_min, dias_bool_list, hora_inicio, hora_fin,
+        maniobra_duracion_min, maniobra_intervalo_s,
+        photo_res_label, video_res_label, cam_index
         """
         dias = [v.get() for v in self.day_vars]
+        cam_index = int(self.cam_var.get()) if self.cam_var.get().isdigit() else 0
         return (
             self.freq_var.get(),
             dias,
@@ -292,7 +304,6 @@ class ConfigWindow:
             self.mani_int_var.get(),
             self.photo_res_var.get(),
             self.video_res_var.get(),
-            int(self.cam_var.get()) if self.cam_var.get().isdigit() else 0,
-            self.lat_var.get(),
-            self.lon_var.get(),
+            cam_index,
         )
+

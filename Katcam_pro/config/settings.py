@@ -19,6 +19,9 @@ def _asset(path_relative: str) -> str:
     """Resuelve rutas relativas a assets/ de forma robusta (dev y exe)."""
     return os.path.join(ASSETS_DIR, path_relative)
 
+def resource_path(rel_path: str) -> str:
+    base = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(__file__)))
+    return os.path.join(base, rel_path)
 # --- Apariencia / UI ---
 BG_COLOR = "#181818"
 FG_COLOR = "#FFFFFF"
@@ -27,13 +30,16 @@ BTN_TEXT_COLOR = "#181818"
 BTN_BORDER_COLOR = "#000000"
 
 # Tamaños recomendados
-MIN_APP_W, MIN_APP_H = 1000, 700
-IMG_MIN_W, IMG_MIN_H = 900, 600
+MIN_APP_W, MIN_APP_H = 720, 520
+IMG_MIN_W, IMG_MIN_H = 320, 180
 RESIZE_DEBOUNCE_MS = 120
 
 # Resoluciones disponibles (etiqueta, w, h)
 RESOLUTIONS = [
+    ("8000 x 6000 (48MP)", 8000, 6000),
     ("3840 x 2160 (4K)", 3840, 2160),
+    ("3264 x 2448 (8MP)", 3264, 2448),
+    ("2592 x 1944 (5MP)", 2592, 1944),
     ("2560 x 1440 (QHD)", 2560, 1440),
     ("1920 x 1080 (FHD)", 1920, 1080),
     ("1600 x 1200 (UXGA)", 1600, 1200),
