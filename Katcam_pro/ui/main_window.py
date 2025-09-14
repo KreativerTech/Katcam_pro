@@ -334,6 +334,13 @@ def build_main_window(root: tk.Tk):
             state.photo_resolution_label = new_label
             state.current_resolution_label = new_label
             state.cfg.set(video_resolution_label=new_label, photo_resolution_label=new_label)
+            # Aplicar inmediatamente si el stream está activo
+            try:
+                wh = _find_res(new_label)
+                if wh and hasattr(camera_manager, "set_resolution"):
+                    camera_manager.set_resolution(*wh)
+            except Exception:
+                pass
             set_status(state)(f"Resolución preferida: {new_label}")
 
         def on_save_config():
@@ -627,7 +634,14 @@ def build_main_window(root: tk.Tk):
     min_h = max(MIN_APP_H, header.winfo_reqheight() + 120 + footer.winfo_reqheight())
     root.minsize(min_w, min_h)
 
-    root.bind("<Configure>", _layout_footer)
+    # Solo actualizar el layout del footer si el tamaño de la ventana realmente cambió
+    _last_size = [root.winfo_width(), root.winfo_height()]
+    def _on_resize(evt=None):
+        w, h = root.winfo_width(), root.winfo_height()
+        if [w, h] != _last_size:
+            _last_size[0], _last_size[1] = w, h
+            _layout_footer()
+    root.bind("<Configure>", _on_resize)
 
     # --- Inicialización y cierre ---
     _ensure_initial_dirs(state)

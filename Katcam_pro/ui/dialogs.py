@@ -88,6 +88,9 @@ def open_info_window(root, state=None):
               font=("Arial", 12, "bold"), padx=10, pady=2, cursor="hand2"
              ).pack(side="right", padx=6, pady=4)
 
+    # Permitir cerrar con Esc (después de definir _close_info)
+    win.bind('<Escape>', lambda e: _close_info())
+
     # Grip para redimensionar (igual que gallery)
     grip = tk.Label(win, bg=BTN_COLOR, cursor="bottom_right_corner")
     def _place_grip():
@@ -139,6 +142,8 @@ def open_info_window(root, state=None):
 
         inner = tk.Frame(canvas, bg=BG_COLOR)
         canvas.create_window((0, 0), window=inner, anchor="nw")
+        # Exponer referencias para cálculos de tamaño externos
+        inner._canvas_ref = canvas  # type: ignore[attr-defined]
 
         def _on_resize(_e=None):
             canvas.configure(scrollregion=canvas.bbox("all"))
@@ -246,9 +251,9 @@ def open_info_window(root, state=None):
     nb.add(about_tab, text="Acerca de")
 
     data = getattr(getattr(state, "cfg", None), "data", {}) if state else {}
-    version = data.get("version", "1.0.0")
-    autor   = data.get("autor", "KreativerTech")
-    soporte = data.get("soporte", "support@kreativer.tech")
+    version = data.get("version", "2.5.5")
+    autor   = data.get("autor", "Kreativer")
+    soporte = data.get("soporte", "kreativer.empresa@gmail.com")
 
     tk.Label(about_tab, text="Información general", font=("Arial", 14, "bold"),
              bg=BG_COLOR, fg=FG_COLOR).pack(anchor="w", padx=12, pady=(12, 6))
@@ -265,6 +270,41 @@ def open_info_window(root, state=None):
              text="Este panel mostrará la ubicación estimada por telemetría.\n"
                   "Aún no hay fuente de telemetría configurada.",
              bg=BG_COLOR, fg=FG_COLOR, justify="left").pack(anchor="w", padx=12, pady=4)
+
+    # Ajustar alto de la ventana al contenido de la pestaña Configuración
+    def _adjust_height_to_cfg(_e=None):
+        try:
+            # cfg_tab es el contenedor interior (inner) del canvas scrollable
+            inner = cfg_tab
+            canvas = getattr(inner, "_canvas_ref", None)
+            if canvas is None:
+                return
+            win.update_idletasks()
+            # Overhead = altura de ventana actual - altura del canvas visible
+            overhead = max(0, win.winfo_height() - canvas.winfo_height())
+            content_h = inner.winfo_reqheight()
+            sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+            max_h = int(sh * 0.9)
+            min_h = 280
+            desired_h = min(max_h, max(min_h, content_h + overhead))
+            # mantener ancho actual
+            ww = max(600, win.winfo_width())
+            x, y = (sw - ww) // 2, (sh - desired_h) // 2
+            win.geometry(f"{ww}x{desired_h}+{x}+{y}")
+        except Exception:
+            pass
+
+    # Llamar tras construir todo para que existan tamaños reales
+    win.after(60, _adjust_height_to_cfg)
+
+    # Reajustar cuando se vuelve a la pestaña Configuración
+    def _on_tab_changed(_evt=None):
+        try:
+            if nb.index('current') == 0:  # índice 0 => Configuración
+                _adjust_height_to_cfg()
+        except Exception:
+            pass
+    nb.bind('<<NotebookTabChanged>>', _on_tab_changed)
 
 
 

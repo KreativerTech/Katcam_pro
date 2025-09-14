@@ -1,5 +1,8 @@
 # video_capture.py
 import cv2
+import sys
+import os
+from contextlib import contextmanager
 import threading
 import time
 import queue
@@ -23,9 +26,16 @@ class CameraManager:
       - Preview fluido; captura alta resolución y restaura preview.
       - Pausa/reanuda internamente durante timelapse/captura.
     """
-    def __init__(self, cam_index=0, backend="dshow", preview_size=(1280, 720), fps=30, use_mjpg=True):
+    def __init__(self, cam_index=0, backend="auto", preview_size=(1280, 720), fps=30, use_mjpg=True):
         self.cam_index = cam_index
-        self.backend = cv2.CAP_DSHOW if backend == "dshow" else cv2.CAP_MSMF
+        # Backend preferido (Windows: probar DSHOW primero, luego MSMF)
+        if backend == "dshow":
+            self.backend = cv2.CAP_DSHOW
+        elif backend == "msmf":
+            self.backend = cv2.CAP_MSMF
+        else:  # auto
+            # Predeterminar a DSHOW (más rápido en muchos drivers)
+            self.backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else None
         self.preview_w, self.preview_h = preview_size
         self.preview_fps = fps
         self.use_mjpg = use_mjpg
@@ -54,6 +64,19 @@ class CameraManager:
 
     def stop_stream(self):
         self._cmd_q.put(("stop_stream", None))
+
+    def set_resolution(self, width: int, height: int):
+        """Actualiza la resolución de preview y la aplica en el hilo worker.
+        Esto permite que cambios desde la UI surtan efecto aunque el stream ya esté abierto.
+        """
+        try:
+            w = int(width)
+            h = int(height)
+        except Exception:
+            return
+        # Actualiza variables y encola aplicación en worker
+        self.preview_w, self.preview_h = w, h
+        self._cmd_q.put(("set_preview_size", (w, h)))
 
     def take_photo(self, dest_folder: str, prefer_sizes=None, jpeg_quality=95,
                    auto_resume_stream=True, block_until_done=True, timeout=3):
@@ -194,8 +217,34 @@ class CameraManager:
                 with self._lock:
                     if self._cap is None:
                         self._open_for_preview_locked()
+                    else:
+                        # Asegurar que el tamaño vigente esté aplicado al iniciar
+                        try:
+                            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.preview_w)
+                            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.preview_h)
+                            self._cap.set(cv2.CAP_PROP_FPS,          self.preview_fps)
+                        except Exception:
+                            pass
             elif cmd == "stop_stream":
                 self._stream_enabled = False
+            elif cmd == "set_preview_size":
+                try:
+                    w, h = arg
+                except Exception:
+                    continue
+                # Aplica de inmediato si hay capturador abierto
+                with self._lock:
+                    if self._cap is None:
+                        self._open_for_preview_locked()
+                    if self._cap is not None and self._cap.isOpened():
+                        try:
+                            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  int(w))
+                            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(h))
+                            # Verificación ligera para forzar el driver
+                            _ = self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                            _ = self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                        except Exception:
+                            pass
             elif cmd == "set_prop":
                 pid, val = arg
                 self._prop_pending[pid] = val
@@ -206,24 +255,120 @@ class CameraManager:
 
     def _open_for_preview_locked(self):
         if self._cap is not None:
-            self._cap.release()
-        self._cap = cv2.VideoCapture(self.cam_index, self.backend)
-        if self.use_mjpg and self._cap.isOpened():
+            try:
+                self._cap.release()
+            except Exception:
+                pass
+        self._cap = None
+
+        # Bajar verbosidad de OpenCV durante intentos para evitar spam
+        prev_level = None
+        try:
+            if hasattr(cv2, "utils") and hasattr(cv2.utils, "logging"):
+                prev_level = cv2.utils.logging.getLogLevel()
+                # Usar SILENT si existe; sino FATAL/ERROR
+                lvl = getattr(cv2.utils.logging, "LOG_LEVEL_SILENT", None)
+                if lvl is None:
+                    lvl = getattr(cv2.utils.logging, "LOG_LEVEL_FATAL", cv2.utils.logging.LOG_LEVEL_ERROR)
+                cv2.utils.logging.setLogLevel(lvl)
+        except Exception:
+            prev_level = None
+
+        @contextmanager
+        def _suppress_stderr():
+            try:
+                fd = sys.stderr.fileno()
+            except Exception:
+                yield
+                return
+            saved = os.dup(fd)
+            try:
+                dn = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(dn, fd)
+                os.close(dn)
+                yield
+            finally:
+                try:
+                    os.dup2(saved, fd)
+                    os.close(saved)
+                except Exception:
+                    pass
+
+        def _try_open(index: int):
+            # Orden de backends por plataforma
+            if sys.platform.startswith("win"):
+                # Preferir DSHOW; MSMF como fallback
+                base = [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
+            else:
+                base = [None]
+            # Priorizar el backend actual si es válido
+            try:
+                pref = self.backend
+                order = []
+                for be in [pref] + [b for b in base if b != pref]:
+                    if be not in order:
+                        order.append(be)
+            except Exception:
+                order = base
+
+            for be in order:
+                cap = None
+                try:
+                    with _suppress_stderr():
+                        cap = cv2.VideoCapture(index) if be is None else cv2.VideoCapture(index, be)
+                    if cap is not None and cap.isOpened():
+                        # Recordar backend exitoso para futuros opens (evita intentos costosos)
+                        if be is not None:
+                            try:
+                                self.backend = be
+                            except Exception:
+                                pass
+                        return cap
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        if cap is not None and not cap.isOpened():
+                            cap.release()
+                    except Exception:
+                        pass
+            return None
+
+        try:
+            # Intentar solo el índice configurado; si falla, probar un único alterno
+            cap = _try_open(self.cam_index)
+            if cap is None:
+                alt = 1 if self.cam_index == 0 else 0
+                cap = _try_open(alt)
+                if cap is not None:
+                    self.cam_index = alt
+            self._cap = cap
+        finally:
+            try:
+                if prev_level is not None:
+                    cv2.utils.logging.setLogLevel(prev_level)
+            except Exception:
+                pass
+
+        if not (self._cap is not None and self._cap.isOpened()):
+            return
+
+        if self.use_mjpg:
             try:
                 self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             except cv2.error as e:
                 print(f"[WARN] No se pudo cambiar FOURCC a MJPG: {e}")
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.preview_w)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.preview_h)
-        self._cap.set(cv2.CAP_PROP_FPS,          self.preview_fps)
-        for _ in range(3):
-            self._cap.read()
-
-    def _reopen_preview_locked(self):
-        if self._cap is not None:
-            self._cap.release()
-            self._cap = None
-        self._open_for_preview_locked()
+        try:
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.preview_w)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.preview_h)
+            self._cap.set(cv2.CAP_PROP_FPS,          self.preview_fps)
+        except Exception:
+            pass
+        for _ in range(1):
+            try:
+                self._cap.read()
+            except Exception:
+                break
 
     def _try_set_resolution_locked(self, sizes):
         for (w, h) in sizes:

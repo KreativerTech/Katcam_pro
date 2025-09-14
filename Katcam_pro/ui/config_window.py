@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 import sys
+import threading
+import os
+from contextlib import contextmanager
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
@@ -21,28 +24,96 @@ def _list_cams(max_cams=8):
     if cv2 is None:
         return []
     found = []
-    for i in range(max_cams):
-        # En Windows conviene CAP_DSHOW; en otros SO usar constructor por defecto
-        if sys.platform.startswith("win"):
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-        else:
-            cap = cv2.VideoCapture(i)
-        if cap is not None and cap.isOpened():
-            found.append(i)
-        if cap is not None:
-            cap.release()
+    # Bajar verbosidad para evitar spam de WARN en Windows
+    prev_level = None
+    try:
+        if hasattr(cv2, "utils") and hasattr(cv2.utils, "logging"):
+            prev_level = cv2.utils.logging.getLogLevel()
+            cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+    except Exception:
+        prev_level = None
+
+    @contextmanager
+    def _suppress_stderr():
+        try:
+            fd = sys.stderr.fileno()
+        except Exception:
+            # No se puede redirigir; seguir normal
+            yield
+            return
+        saved = os.dup(fd)
+        try:
+            dn = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(dn, fd)
+            os.close(dn)
+            yield
+        finally:
+            try:
+                os.dup2(saved, fd)
+                os.close(saved)
+            except Exception:
+                pass
+
+    try:
+        # Limitar escaneo para evitar spam en equipos sin cámaras
+        scan_n = max(1, min(4, int(max_cams)))
+        for i in range(scan_n):
+            opened = False
+            if sys.platform.startswith("win"):
+                # Probar primero MSMF, luego DSHOW, y por último por defecto
+                for backend in (cv2.CAP_MSMF, cv2.CAP_DSHOW, None):
+                    try:
+                        with _suppress_stderr():
+                            cap = cv2.VideoCapture(i) if backend is None else cv2.VideoCapture(i, backend)
+                        if cap is not None and cap.isOpened():
+                            found.append(i)
+                            opened = True
+                            cap.release()
+                            break
+                        if cap is not None:
+                            cap.release()
+                    except Exception:
+                        try:
+                            if cap is not None:
+                                cap.release()
+                        except Exception:
+                            pass
+                if opened:
+                    continue
+            else:
+                # Otros SO: default
+                try:
+                    with _suppress_stderr():
+                        cap = cv2.VideoCapture(i)
+                    if cap is not None and cap.isOpened():
+                        found.append(i)
+                    if cap is not None:
+                        cap.release()
+                except Exception:
+                    try:
+                        if cap is not None:
+                            cap.release()
+                    except Exception:
+                        pass
+    finally:
+        # Restaurar nivel de log
+        try:
+            if prev_level is not None:
+                cv2.utils.logging.setLogLevel(prev_level)
+        except Exception:
+            pass
     return found
 
 
 class ConfigWindow:
     """
     Ventana de configuración:
-      - Pestañas: Cámara, Timelapse, Maniobra, GPS
-      - Cámara: selector de cámara, resolución foto, resolución video,
-                auto-WB/expo y ajustes de driver.
-      - Timelapse: frecuencia (MINUTOS), rango horario, días.
-      - Maniobra: duración (min) e intervalo (seg).
-      - GPS: lat/lon.
+        - Pestañas: Cámara, Timelapse, Maniobra, GPS
+        - Cámara: selector de cámara, resolución foto, resolución video,
+                  auto-WB/expo y ajustes de driver.
+        - Timelapse: frecuencia (MINUTOS), rango horario, días.
+        - Maniobra: duración (min) e intervalo (seg).
+        - GPS: lat/lon.
     """
     def __init__(self, root, state, on_save, on_auto_wb, on_open_driver, on_resolution_change):
         try:
@@ -54,6 +125,7 @@ class ConfigWindow:
             self.on_resolution_change = on_resolution_change  # firma: on_resolution_change(new_label:str)
 
             self.win = tk.Toplevel(root)
+            self.win.withdraw()  # Oculta la ventana mientras se configura
             set_icon(self.win)
             self.win.title("Configuración")
             self.win.configure(bg=BG_COLOR)
@@ -76,6 +148,9 @@ class ConfigWindow:
                       bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
                       font=("Arial", 13, "bold"), padx=8, pady=2, relief="flat", cursor="hand2"
             ).pack(side="right", padx=8)
+
+            # Permitir cerrar con Esc
+            self.win.bind('<Escape>', lambda e: _close_config())
 
             # Permitir mover la ventana arrastrando la barra de título
             _drag = {"x": 0, "y": 0}
@@ -121,6 +196,13 @@ class ConfigWindow:
             btn_save.pack(pady=(0, 10))
 
             self._load_from_state()
+            # Mostrar la ventana ya lista (evita tener que apretar dos veces)
+            try:
+                self.win.deiconify()
+                self.win.lift()
+                self.win.focus_force()
+            except Exception:
+                pass
         except Exception as e:
             messagebox.showerror("Error de configuración", f"No se pudo abrir la ventana de configuración:\n{e}")
 
@@ -136,9 +218,9 @@ class ConfigWindow:
         self.cam_var = tk.StringVar(value=str(self.state.cfg.data.get("cam_index", 0)))
         self.cam_combo = ttk.Combobox(self.tab_cam, textvariable=self.cam_var, state="readonly", width=20)
         self.cam_combo.grid(row=row, column=1, sticky="w", padx=6, pady=6)
-        tk.Button(self.tab_cam, text="Detectar", command=self._refresh_cams,
-                  bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0
-                 ).grid(row=row, column=2, sticky="w", padx=6, pady=6)
+        self.detect_btn = tk.Button(self.tab_cam, text="Detectar", command=self._detect_cams_async,
+                                    bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0)
+        self.detect_btn.grid(row=row, column=2, sticky="w", padx=6, pady=6)
         row+=1
 
         # Resolución FOTO
@@ -197,16 +279,73 @@ class ConfigWindow:
         row+=1
 
     def _refresh_cams(self):
-        cams = _list_cams()
-        if not cams:
-            messagebox.showerror("Cámaras", "No se detectaron cámaras (o falta OpenCV).")
-            self.cam_combo["values"] = []
+        # compat: llamada síncrona (evitar si es posible)
+        cams = _list_cams(max_cams=2)
+        self._apply_cams_list(cams)
+
+    def _detect_cams_async(self):
+        if getattr(self, "_detecting", False):
             return
-        self.cam_combo["values"] = [str(i) for i in cams]
-        # si el actual no está, selecciona el primero
-        cur = self.cam_var.get()
-        if cur not in self.cam_combo["values"]:
-            self.cam_var.set(str(cams[0]))
+        self._detecting = True
+        try:
+            # deshabilitar controles mientras detecta
+            try:
+                self.cam_combo.configure(state="disabled")
+            except Exception:
+                pass
+            try:
+                self.detect_btn.configure(state="disabled", text="Detectando…")
+            except Exception:
+                pass
+
+            def worker():
+                cams = []
+                try:
+                    # Evitar tocar el dispositivo si hay stream activo
+                    try:
+                        from video_capture import camera_manager
+                        streaming = getattr(camera_manager, "_stream_enabled", False)
+                    except Exception:
+                        streaming = False
+                    if streaming:
+                        cams = [int(self.cam_var.get()) if self.cam_var.get().isdigit() else 0]
+                    else:
+                        cams = _list_cams(max_cams=2)
+                except Exception:
+                    cams = []
+                finally:
+                    self.win.after(0, lambda: self._apply_cams_list(cams))
+
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception:
+            self._detecting = False
+
+    def _apply_cams_list(self, cams):
+        try:
+            if not cams:
+                self.cam_combo["values"] = []
+                # mantener selección actual si había
+                cur = self.cam_var.get()
+                if not cur:
+                    self.cam_var.set("0")
+                messagebox.showerror("Cámaras", "No se detectaron cámaras (o falta OpenCV).")
+            else:
+                values = [str(i) for i in cams]
+                self.cam_combo["values"] = values
+                cur = self.cam_var.get()
+                if cur not in values:
+                    self.cam_var.set(values[0])
+        finally:
+            # re-habilitar
+            try:
+                self.cam_combo.configure(state="readonly")
+            except Exception:
+                pass
+            try:
+                self.detect_btn.configure(state="normal", text="Detectar")
+            except Exception:
+                pass
+            self._detecting = False
 
     # ---------- Timelapse ----------
     def _build_tab_timelapse(self):
@@ -283,7 +422,14 @@ class ConfigWindow:
     
     # ---------- Carga inicial ----------
     def _load_from_state(self):
-        self._refresh_cams()
+        # No auto-detectamos cámaras al abrir para evitar demoras/ruido.
+        # Precargamos el índice actual guardado.
+        try:
+            idx = str(self.state.cfg.data.get("cam_index", 0))
+            self.cam_combo["values"] = [idx]
+            self.cam_var.set(idx)
+        except Exception:
+            pass
 
     # ---------- Lectura para guardar ----------
     def read_all(self):
