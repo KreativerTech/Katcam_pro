@@ -387,16 +387,78 @@ def build_main_window(root: tk.Tk):
                 pass
         _abrir_carpeta(state)
 
-    # -------- Mini toolbar en el header: ☰  ⚙  📁 --------
+    # -------- Mini toolbar en el header: iconos menú / config / galería --------
     toolbar = tk.Frame(header, bg=BTN_COLOR)
 
-    # ☰ Menú
+    # Helper para iconos del header (tamaños 20–40 px según altura)
+    def _toolbar_icon(name: str):
+        def _strip_white_bg(img):
+            try:
+                img = img.convert("RGBA")
+                datas = img.getdata()
+                new_data = []
+                for (r, g, b, a) in datas:
+                    if a == 0:
+                        new_data.append((r, g, b, a))
+                    elif r >= 246 and g >= 246 and b >= 246:
+                        # Hacer blanco/near-blanco transparente
+                        new_data.append((255, 255, 255, 0))
+                    else:
+                        new_data.append((r, g, b, a))
+                img.putdata(new_data)
+            except Exception:
+                pass
+            return img
+        # Elegir tamaño deseado según altura, luego buscar el más cercano disponible
+        try:
+            h = root.winfo_height()
+        except Exception:
+            h = 600
+        if h >= 1000:
+            desired = 60
+        elif h >= 850:
+            desired = 48
+        elif h >= 700:
+            desired = 40
+        elif h >= 600:
+            desired = 30
+        elif h >= 500:
+            desired = 24
+        else:
+            desired = 20
+
+        available = [20, 24, 30, 40, 48, 60]
+        # Ordenar por cercanía al deseado
+        candidates = sorted(available, key=lambda s: (abs(s - desired), s))
+        for sz in candidates:
+            path = os.path.join("assets", f"{name}{sz}.png")
+            try:
+                img = Image.open(path).convert("RGBA")
+                # Si el PNG viene con fondo blanco, intentamos removerlo
+                if name in ("menu", "conf", "gal"):
+                    img = _strip_white_bg(img)
+                return ImageTk.PhotoImage(img)
+            except Exception:
+                continue
+        return None
+
+    menu_icon = _toolbar_icon("menu")
+    conf_icon = _toolbar_icon("conf")
+    gal_icon  = _toolbar_icon("gal")
+
+    # Menú (con icono; fallback a texto si falta)
     menu_btn = tk.Button(
-        toolbar, text="☰",
+        toolbar,
+        image=menu_icon if menu_icon else None,
+        text="☰" if not menu_icon else "",
         bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
-        bd=0, relief="flat", font=("Arial", 15, "bold"),
-        padx=10, pady=4, cursor="hand2"
+        bd=0, relief="flat",
+        font=("Arial", 15, "bold") if not menu_icon else None,
+        padx=10, pady=4, cursor="hand2",
+        compound="center"
     )
+    # Evitar GC del icono
+    menu_btn.image = menu_icon
     menu_btn.pack(side="left", padx=(0, 6))
 
     dd_menu = tk.Menu(
@@ -418,24 +480,34 @@ def build_main_window(root: tk.Tk):
         dd_menu.post(x, y)
     menu_btn.configure(command=_show_menu)
 
-    # ⚙ Config
+    # Configuración
     gear_btn = tk.Button(
-        toolbar, text="⚙",
+        toolbar,
         command=open_config,
+        image=conf_icon if conf_icon else None,
+        text="⚙" if not conf_icon else "",
         bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
-        bd=0, relief="flat", font=("Arial", 14, "bold"),
-        padx=10, pady=4, cursor="hand2"
+        bd=0, relief="flat",
+        font=("Arial", 14, "bold") if not conf_icon else None,
+        padx=10, pady=4, cursor="hand2",
+        compound="center"
     )
+    gear_btn.image = conf_icon
     gear_btn.pack(side="left", padx=(0, 6))
 
-    # 📁 Galería (o carpeta)
+    # Galería (o carpeta)
     folder_btn = tk.Button(
-        toolbar, text="📁",
+        toolbar,
         command=_open_gallery_or_folder,
+        image=gal_icon if gal_icon else None,
+        text="📁" if not gal_icon else "",
         bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
-        bd=0, relief="flat", font=("Arial", 14, "bold"),
-        padx=10, pady=4, cursor="hand2"
+        bd=0, relief="flat",
+        font=("Arial", 14, "bold") if not gal_icon else None,
+        padx=10, pady=4, cursor="hand2",
+        compound="center"
     )
+    folder_btn.image = gal_icon
     folder_btn.pack(side="left")
 
     # Colocar la toolbar en el header (y asegurarla arriba)
