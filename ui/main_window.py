@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 import os
 import sys
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import messagebox, filedialog as fd
 
-from PIL import Image, ImageOps, ImageTk
+from PIL import Image, ImageOps, ImageTk, ImageFilter
 try:
     import tzlocal
 except Exception:
@@ -17,7 +18,8 @@ except Exception:
 from config.settings import (
     MIN_APP_W, MIN_APP_H, IMG_MIN_W, IMG_MIN_H,
     BG_COLOR, FG_COLOR, BTN_COLOR, BTN_TEXT_COLOR, BTN_BORDER_COLOR,
-    DEFAULT_RES_LABEL, COMPANY_LOGO_PATH, HEADER_IMAGE_PATH
+    DEFAULT_RES_LABEL, COMPANY_LOGO_PATH, HEADER_IMAGE_PATH, _asset,
+    get_font, FONT_SMALL, FONT_NORMAL, FONT_MEDIUM, FONT_LARGE, SHADOW_COLOR, SHADOW_OFFSET_X, SHADOW_OFFSET_Y
 )
 from config.storage import ConfigStore
 from ui.image_panel import ImagePanel
@@ -40,10 +42,100 @@ def outlined_button(parent, text, command, width=12, height=1):
         width=width, height=height,
         bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
         activebackground=BTN_COLOR, activeforeground=BTN_TEXT_COLOR,
-        bd=0, relief="flat", font=("Arial", 11, "bold"), padx=6, pady=6
+        bd=0, relief="flat", font=get_font(FONT_NORMAL, "bold"), padx=6, pady=6
     )
     btn.pack()
     return wrapper, btn
+
+
+def create_shadowed_text(canvas, x, y, text, fill=BTN_TEXT_COLOR, font=None, anchor="se"):
+    """Crear texto simple sin sombra (funcionalidad removida)"""
+    if font is None:
+        font = get_font(FONT_LARGE, "bold")
+    
+    # Crear solo el texto principal (sin sombra)
+    text_id = canvas.create_text(
+        x, y, text=text, fill=fill, font=font, anchor=anchor
+    )
+    
+    return text_id, None
+
+
+def create_id_box(canvas, x, y, text, fill=BTN_TEXT_COLOR, font=None):
+    """Crear recuadro con sombra sutil para el ID de cámara"""
+    if font is None:
+        font = get_font(FONT_LARGE, "bold")
+    
+    # Crear texto temporal para medir dimensiones
+    temp_text = canvas.create_text(0, 0, text=text, fill=fill, font=font)
+    bbox = canvas.bbox(temp_text)
+    canvas.delete(temp_text)
+    
+    if bbox:
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        # Dimensiones del recuadro con padding
+        padding = 8
+        box_width = text_width + (padding * 2)
+        box_height = text_height + (padding * 2)
+        
+        # Coordenadas del recuadro (anclado en la esquina inferior izquierda)
+        box_x1 = x - padding
+        box_y1 = y - text_height - padding
+        box_x2 = x + text_width + padding
+        box_y2 = y + padding
+        
+        # Crear solo el recuadro principal - solo borde, sin fondo ni sombra
+        box_id = canvas.create_rectangle(
+            box_x1, box_y1, box_x2, box_y2,
+            fill="", outline=BTN_COLOR, width=2
+        )
+        
+        # Crear texto
+        text_id = canvas.create_text(
+            x + text_width//2, y - text_height//2,
+            text=text, fill=fill, font=font, anchor="center"
+        )
+        
+        return text_id, box_id, None
+    
+    return None, None, None
+
+
+def add_shadow_to_icon(icon_image, shadow_offset=2):
+    """Añadir sombra sutil a una imagen de icono"""
+    if icon_image is None:
+        return None
+    
+    try:
+        # Convertir a RGBA si no lo es
+        if icon_image.mode != 'RGBA':
+            icon_image = icon_image.convert('RGBA')
+        
+        # Crear una imagen más grande para acomodar la sombra
+        shadow_size = shadow_offset * 2
+        new_width = icon_image.width + shadow_size
+        new_height = icon_image.height + shadow_size
+        
+        # Crear imagen base transparente
+        result = Image.new('RGBA', (new_width, new_height), (0, 0, 0, 0))
+        
+        # Crear sombra: versión negra y difuminada del icono
+        shadow = Image.new('RGBA', icon_image.size, (0, 0, 0, 0))
+        shadow.paste((0, 0, 0, 128), (0, 0), icon_image)  # Sombra semi-transparente
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=1))
+        
+        # Pegar la sombra con offset
+        result.paste(shadow, (shadow_offset, shadow_offset), shadow)
+        
+        # Pegar el icono original encima
+        result.paste(icon_image, (0, 0), icon_image)
+        
+        return result
+    except Exception:
+        # Si falla, devolver el icono original
+        return icon_image
 
 
 def has_write_access(path: str) -> bool:
@@ -65,6 +157,47 @@ def _find_res(label: str):
         return (w, h)
     except Exception:
         return None
+
+
+def _maybe_downgrade_resolution(state, requested_label: str):
+    """
+    Si el contador de mismatches para requested_label superó el umbral,
+    degradar la resolución a la siguiente disponible más baja y persistirlo.
+    """
+    try:
+        from config import settings as _cfg
+        RES = getattr(_cfg, "RESOLUTIONS", [])
+    except Exception:
+        RES = []
+    try:
+        labels = [lbl for (lbl, w, h) in RES]
+        if requested_label not in labels:
+            return
+        idx = labels.index(requested_label)
+        # buscar siguiente más baja (índice incrementado). Si no hay, salir.
+        if idx + 1 >= len(labels):
+            return
+        new_label = labels[idx + 1]
+        old_label = requested_label
+        # No forzamos el cambio en la configuración del usuario.
+        # Solo reseteamos el contador y avisamos por telemetría/UI para que el usuario cambie manualmente si lo desea.
+        # resetear contador
+        try:
+            state.res_mismatch_counters.pop(requested_label, None)
+        except Exception:
+            pass
+        # telemetría y UI
+        try:
+            from infra.telemetry import log_event
+            log_event("resolution_suggest_downgrade", from_label=old_label, suggested_label=new_label)
+        except Exception:
+            pass
+        try:
+            set_status(state)(f"Advertencia: {old_label} parece no ser soportada por la cámara. Se sugiere usar {new_label} desde Configuración.")
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 # =========================
@@ -95,7 +228,9 @@ class HeaderBanner(tk.Frame):
         self._target_h = max(100, min(160, int(screen_h * 0.16)))
 
         self._id_text = None
+        self._id_box = None
         self._clock_text = None
+        self._clock_shadow = None
         self._left_pad = 12
         self._right_pad = 12
         self._bottom_pad = 10
@@ -123,9 +258,9 @@ class HeaderBanner(tk.Frame):
             self._canvas.itemconfig(self._clock_text, text=clock_label)
         else:
             w = max(1, self.winfo_width()); h = self._target_h
-            self._clock_text = self._canvas.create_text(
-                w - self._right_pad, h - self._bottom_pad,
-                text=clock_label, fill=BTN_TEXT_COLOR, font=("Arial", 14, "bold"), anchor="se"
+            self._clock_text, _ = create_shadowed_text(
+                self._canvas, w - self._right_pad, h - self._bottom_pad,
+                clock_label, BTN_TEXT_COLOR, get_font(FONT_LARGE, "bold"), "se"
             )
         self._position_text()
         self.after(1000, self._tick_clock)
@@ -165,9 +300,9 @@ class HeaderBanner(tk.Frame):
 
         left_label = f"ID: {self._camera_name_getter()}"
         if self._id_text is None:
-            self._id_text = self._canvas.create_text(
-                self._left_pad, h - self._bottom_pad,
-                text=left_label, fill=BTN_TEXT_COLOR, font=("Arial", 14, "bold"), anchor="sw"
+            self._id_text, self._id_box, _ = create_id_box(
+                self._canvas, self._left_pad, h - self._bottom_pad,
+                left_label, BTN_TEXT_COLOR, get_font(FONT_LARGE, "bold")
             )
         else:
             self._canvas.itemconfig(self._id_text, text=left_label)
@@ -175,7 +310,7 @@ class HeaderBanner(tk.Frame):
         if self._clock_text is None:
             self._clock_text = self._canvas.create_text(
                 w - self._right_pad, h - self._bottom_pad,
-                text="--:--:--", fill=BTN_TEXT_COLOR, font=("Arial", 14, "bold"), anchor="se"
+                text="--:--:--", fill=BTN_TEXT_COLOR, font=get_font(FONT_LARGE, "bold"), anchor="se"
             )
 
         self._position_text()
@@ -183,7 +318,17 @@ class HeaderBanner(tk.Frame):
     def _position_text(self):
         w = max(1, self.winfo_width()); h = self._target_h
         if self._id_text is not None:
-            self._canvas.coords(self._id_text, self._left_pad, h - self._bottom_pad)
+            # Recalcular posición del recuadro del ID
+            self._canvas.delete(self._id_text)
+            if self._id_box:
+                self._canvas.delete(self._id_box)
+            # No hay sombra que eliminar ahora
+            
+            left_label = f"ID: {self._camera_name_getter()}"
+            self._id_text, self._id_box, _ = create_id_box(
+                self._canvas, self._left_pad, h - self._bottom_pad,
+                left_label, BTN_TEXT_COLOR, get_font(FONT_LARGE, "bold")
+            )
         if self._clock_text is not None:
             self._canvas.coords(self._clock_text, w - self._right_pad, h - self._bottom_pad)
         if self._bg_img_id is not None:
@@ -214,6 +359,9 @@ class AppState:
         self.video_resolution_label = self.cfg.data.get("video_resolution_label", legacy or DEFAULT_RES_LABEL)
         self.photo_resolution_label = self.cfg.data.get("photo_resolution_label", legacy or DEFAULT_RES_LABEL)
         self.current_resolution_label = self.video_resolution_label  # alias legacy
+        # Cámara seleccionada
+        # Contadores para mismatches por etiqueta (para downgrade automático)
+        self.res_mismatch_counters = {}
 
         # Cámara seleccionada
         self.cam_index = self.cfg.data.get("cam_index", 0)
@@ -228,6 +376,9 @@ class AppState:
         self.lbl_status_timelapse = None
         self.lbl_status_maniobra = None
         self.lbl_status_general = None
+        # Control de timelapse / capturas
+        self.last_timelapse_capture_ts = 0.0
+        self.last_effective_resolution = None  # (w,h) de última captura
         self.btn_switch_trans = None
         self.btn_switch_timelapse = None
         self.btn_maniobra = None
@@ -241,6 +392,29 @@ class AppState:
 
         # stream tick
         self._tick_job = None
+        # Telemetría / watchdog
+        self.last_frame_ts = 0
+        self.frame_counter = 0
+        self.maniobra_capture_in_progress = False
+        self.maniobra_cancelled_flag = False
+        self.maniobra_was_streaming = False
+        # Cola de capturas pendientes para evitar colapsos
+        self.capture_queue = []  # elementos: dict(tipo="manual"|"timelapse"|"maniobra", params={})
+        self.max_capture_queue = 3  # límite para no crecer indefinidamente
+        # Acciones diferidas (stream_on / stream_off) mientras hay captura en curso
+        self.deferred_actions = []  # lista de strings: 'stream_on' | 'stream_off'
+        self.max_deferred_actions = 5
+        # Resoluciones soportadas detectadas (labels). Se llena vía probe.
+        self.supported_resolution_labels = []
+
+    def coalesce_stream_action(self, action: str):
+        """Mantiene solo la última intención de stream (on/off) si estamos capturando."""
+        if action not in ("stream_on", "stream_off"):
+            return
+        # Filtra previas acciones de stream
+        self.deferred_actions = [a for a in self.deferred_actions if a not in ("stream_on", "stream_off")]
+        self.deferred_actions.append(action)
+
 
 
 # =========================
@@ -431,12 +605,14 @@ def build_main_window(root: tk.Tk):
         # Ordenar por cercanía al deseado
         candidates = sorted(available, key=lambda s: (abs(s - desired), s))
         for sz in candidates:
-            path = os.path.join("assets", f"{name}{sz}.png")
+            path = _asset(f"{name}{sz}.png")
             try:
                 img = Image.open(path).convert("RGBA")
                 # Si el PNG viene con fondo blanco, intentamos removerlo
                 if name in ("menu", "conf", "gal"):
                     img = _strip_white_bg(img)
+                
+                # No aplicar sombra a iconos de toolbar
                 return ImageTk.PhotoImage(img)
             except Exception:
                 continue
@@ -453,7 +629,7 @@ def build_main_window(root: tk.Tk):
         text="☰" if not menu_icon else "",
         bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
         bd=0, relief="flat",
-        font=("Arial", 15, "bold") if not menu_icon else None,
+        font=get_font(15, "bold") if not menu_icon else None,
         padx=10, pady=4, cursor="hand2",
         compound="center"
     )
@@ -472,6 +648,9 @@ def build_main_window(root: tk.Tk):
     dd_menu.add_command(label="Inicio con Windows…", command=lambda: open_autostart_window(root, set_status(state)))
     dd_menu.add_separator()
     dd_menu.add_command(label="Info", command=lambda: open_info_window(root, state))
+    dd_menu.add_separator()
+    dd_menu.add_command(label="Apagar sistema", command=lambda: _apagar_sistema(state))
+    dd_menu.add_command(label="Reiniciar sistema", command=lambda: _reiniciar_sistema(state))
 
     def _show_menu(_evt=None):
         dd_menu.update_idletasks()
@@ -547,9 +726,10 @@ def build_main_window(root: tk.Tk):
 
     def _get_icon(name):
         size = _icon_size()
-        path = os.path.join("assets", f"{name}{size}px.png")
+        path = _asset(f"{name}{size}px.png")
         try:
             img = Image.open(path).convert("RGBA")
+            # No aplicar sombra a iconos de botones
             return ImageTk.PhotoImage(img)
         except Exception:
             return None
@@ -615,13 +795,13 @@ def build_main_window(root: tk.Tk):
     status_box = tk.Frame(center, bg="black", bd=0, highlightthickness=1, highlightbackground="#333")
     status_box.pack(side="left", padx=12)
 
-    state.lbl_status_transmision = tk.Label(status_box, text="Live: STOPPED", bg="black", fg="#a6ffa6", font=("Arial", 11, "bold"))
+    state.lbl_status_transmision = tk.Label(status_box, text="Live: STOPPED", bg="black", fg="#a6ffa6", font=get_font(FONT_NORMAL, "bold"))
     state.lbl_status_transmision.pack(anchor="w", padx=10, pady=2)
-    state.lbl_status_timelapse = tk.Label(status_box, text="Timelapse: STOPPED", bg="black", fg="#a6ffa6", font=("Arial", 11, "bold"))
+    state.lbl_status_timelapse = tk.Label(status_box, text="Timelapse: STOPPED", bg="black", fg="#a6ffa6", font=get_font(FONT_NORMAL, "bold"))
     state.lbl_status_timelapse.pack(anchor="w", padx=10, pady=2)
-    state.lbl_status_maniobra = tk.Label(status_box, text="Short: INACTIVE", bg="black", fg="#a6ffa6", font=("Arial", 11, "bold"))
+    state.lbl_status_maniobra = tk.Label(status_box, text="Short: INACTIVE", bg="black", fg="#a6ffa6", font=get_font(FONT_NORMAL, "bold"))
     state.lbl_status_maniobra.pack(anchor="w", padx=10, pady=2)
-    state.lbl_status_general = tk.Label(status_box, text="Ready", bg="black", fg="#e0e0e0", font=("Arial", 10))
+    state.lbl_status_general = tk.Label(status_box, text="Ready", bg="black", fg="#e0e0e0", font=get_font(FONT_SMALL))
     state.lbl_status_general.pack(anchor="w", padx=10, pady=4)
 
     lbl_company = None
@@ -647,6 +827,8 @@ def build_main_window(root: tk.Tk):
         try:
             img = Image.open(COMPANY_LOGO_PATH).convert("RGBA")
             img = ImageOps.contain(img, size)
+            # Aplicar sombra solo al logo del footer
+            img = add_shadow_to_icon(img)
             company_logo_img = ImageTk.PhotoImage(img)
         except Exception as e:
             print(f"[FOOTER LOGO] Error: {e}")
@@ -656,6 +838,16 @@ def build_main_window(root: tk.Tk):
             lbl_company.pack(side="left", padx=12)
         lbl_company.config(image=company_logo_img)
         lbl_company.image = company_logo_img
+
+        # Triple click en el logo de Kreativer -> solicitar cierre de la app
+        try:
+            lbl_company.bind(
+                "<Triple-Button-1>",
+                lambda _e: root.event_generate("<<KATCAM_CLOSE_REQUEST>>"),
+                add="+",
+            )
+        except Exception:
+            pass
 
     _update_company_logo()
 
@@ -737,11 +929,45 @@ def build_main_window(root: tk.Tk):
             pass
         root.destroy()
 
+    # Permite disparar el cierre desde otros widgets (ej: triple click logo)
+    try:
+        root.bind("<<KATCAM_CLOSE_REQUEST>>", lambda _e: on_close(), add="+")
+    except Exception:
+        pass
+
     # Cierre solo con Shift+Q (bloquear cierre normal)
     root.protocol("WM_DELETE_WINDOW", lambda: None)
     root.bind_all('<Alt-F4>', lambda e: 'break')
     root.bind_all('<Shift-q>', lambda _e: on_close())
     root.bind_all('<Shift-Q>', lambda _e: on_close())
+
+    # Reanudar estados previos (stream / timelapse)
+    try:
+        if state.cfg.data.get("stream_activo"):
+            root.after(300, lambda: stream_on(state))
+        if state.cfg.data.get("timelapse_activo"):
+            root.after(800, lambda: toggle_timelapse(state) if not state.timelapse_running else None)
+        try:
+            from infra.telemetry import log_event
+            log_event("resume_from_config", stream=state.cfg.data.get("stream_activo"),
+                      timelapse=state.cfg.data.get("timelapse_activo"))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # (watchdog principal redefinido más adelante con periodo de gracia)
+
+    # Snapshot periódico del estado
+    def _snapshot():
+        try:
+            from infra.telemetry import dump_state
+            dump_state(state)
+        except Exception:
+            pass
+        finally:
+            root.after(60000, _snapshot)
+    root.after(60000, _snapshot)
 
     return state
 
@@ -787,6 +1013,78 @@ def _abrir_carpeta(state: AppState):
         messagebox.showerror("Carpeta", f"No se pudo abrir la carpeta:\n{e}")
 
 
+def _apagar_sistema(state: AppState):
+    """Apaga el sistema completo (Windows/Linux/macOS) desde el menú."""
+    try:
+        state.cfg.set(
+            stream_activo=state.streaming,
+            timelapse_activo=state.timelapse_running,
+            photo_resolution_label=state.photo_resolution_label,
+            video_resolution_label=state.video_resolution_label,
+            cam_index=state.cam_index
+        )
+    except Exception:
+        pass
+
+    try:
+        camera_manager.stop_stream()
+        camera_manager.shutdown()
+    except Exception:
+        pass
+
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["shutdown", "/s", "/t", "0"], shell=False)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["osascript", "-e", 'tell app "System Events" to shut down'])
+        else:
+            subprocess.Popen(["shutdown", "-h", "now"], shell=False)
+    except Exception as e:
+        messagebox.showerror("Apagar sistema", f"No se pudo apagar el sistema:\n{e}")
+        return
+
+    try:
+        state.root.destroy()
+    except Exception:
+        pass
+
+
+def _reiniciar_sistema(state: AppState):
+    """Reinicia el sistema completo (Windows/Linux/macOS) desde el menú."""
+    try:
+        state.cfg.set(
+            stream_activo=state.streaming,
+            timelapse_activo=state.timelapse_running,
+            photo_resolution_label=state.photo_resolution_label,
+            video_resolution_label=state.video_resolution_label,
+            cam_index=state.cam_index
+        )
+    except Exception:
+        pass
+
+    try:
+        camera_manager.stop_stream()
+        camera_manager.shutdown()
+    except Exception:
+        pass
+
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["shutdown", "/r", "/t", "0"], shell=False)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["osascript", "-e", 'tell app "System Events" to restart'])
+        else:
+            subprocess.Popen(["shutdown", "-r", "now"], shell=False)
+    except Exception as e:
+        messagebox.showerror("Reiniciar sistema", f"No se pudo reiniciar el sistema:\n{e}")
+        return
+
+    try:
+        state.root.destroy()
+    except Exception:
+        pass
+
+
 # =========================
 # UI/Estado
 # =========================
@@ -826,6 +1124,21 @@ def update_maniobra_ui(state: AppState):
         bg="#FFFA78" if state.maniobra_running else BTN_COLOR,
         fg="#000000" if state.maniobra_running else BTN_TEXT_COLOR
     )
+
+
+def _process_deferred_actions(state: AppState):
+    if not state.deferred_actions:
+        return
+    # Tomar última intención de stream
+    final_action = None
+    for act in state.deferred_actions:
+        if act in ("stream_on", "stream_off"):
+            final_action = act
+    state.deferred_actions.clear()
+    if final_action == "stream_on" and not state.streaming:
+        stream_on(state)
+    elif final_action == "stream_off" and state.streaming:
+        stream_off(state)
 
 
 def _pause_stream_if_needed(state: AppState):
@@ -874,8 +1187,9 @@ def update_main_image(state: AppState):
         if last_photo and os.path.exists(last_photo):
             img = Image.open(last_photo).convert("RGB")
         elif COMPANY_LOGO_PATH and os.path.exists(COMPANY_LOGO_PATH):
-            # PNG con posible transparencia
+            # PNG con posible transparencia - aplicar sombra
             img = Image.open(COMPANY_LOGO_PATH).convert("RGBA")
+            img = add_shadow_to_icon(img)
         else:
             # Fallback final visible
             img = Image.new("RGB", (IMG_MIN_W, IMG_MIN_H), (64, 64, 64))
@@ -891,9 +1205,46 @@ def update_main_image(state: AppState):
 # Stream
 # =========================
 def stream_on(state: AppState):
+    # Si hay una captura en curso, diferir encendido (mantenemos cola de intención)
+    if state.is_capturing or state.maniobra_capture_in_progress:
+        state.coalesce_stream_action("stream_on")
+        set_status(state)("Live se encenderá al terminar la captura...")
+        return
     if state.streaming:
         return
+
+    # Confirmar si hay procesos activos que vamos a detener
+    conflicts = []
+    if state.timelapse_running:
+        conflicts.append("timelapse")
+    if state.maniobra_running:
+        conflicts.append("maniobra")
+    if conflicts:
+        try:
+            resp = messagebox.askyesno(
+                "Iniciar Live",
+                "Para iniciar Live se detendrá: " + ", ".join(conflicts) + "\n¿Continuar?"
+            )
+        except Exception:
+            resp = True
+        if not resp:
+            set_status(state)("Live cancelado por el usuario.")
+            return
+        # Detener lo que corresponda
+        if state.timelapse_running:
+            toggle_timelapse(state)
+        if state.maniobra_running:
+            toggle_maniobra(state)
     state.streaming = True
+    try:
+        state.cfg.set(stream_activo=True)
+    except Exception:
+        pass
+    try:
+        state.last_frame_ts = time.time()
+        state.frame_counter = 0
+    except Exception:
+        pass
 
     # Usar resolución de VIDEO/stream
     label = state.video_resolution_label or state.current_resolution_label or DEFAULT_RES_LABEL
@@ -907,13 +1258,26 @@ def stream_on(state: AppState):
     camera_manager.start_stream()
     update_stream_ui(state)
     set_status(state)("Transmisión en directo")
+    try:
+        from infra.telemetry import log_event
+        log_event("stream_on", resolution=label)
+    except Exception:
+        pass
     _tick_stream(state)
 
 
 def stream_off(state: AppState):
+    if state.is_capturing:
+        state.coalesce_stream_action("stream_off")
+        set_status(state)("Acción 'detener live' diferida (captura en curso)...")
+        return
     if not state.streaming:
         return
     state.streaming = False
+    try:
+        state.cfg.set(stream_activo=False)
+    except Exception:
+        pass
     try:
         camera_manager.stop_stream()
     except Exception:
@@ -921,6 +1285,11 @@ def stream_off(state: AppState):
     update_stream_ui(state)
     set_status(state)("Transmisión detenida")
     update_main_image(state)
+    try:
+        from infra.telemetry import log_event
+        log_event("stream_off")
+    except Exception:
+        pass
 
 
 def _tick_stream(state: AppState):
@@ -929,18 +1298,29 @@ def _tick_stream(state: AppState):
         frame_rgb = camera_manager.get_frame_rgb()
         if frame_rgb is not None and state.image_panel:
             img = Image.fromarray(frame_rgb); state.image_panel.set_image(img)
-    except Exception:
-        pass
+            try:
+                state.last_frame_ts = time.time()
+                state.frame_counter += 1
+                if state.frame_counter % 120 == 0:
+                    try:
+                        from infra.telemetry import log_event
+                        log_event("stream_heartbeat", frames=state.frame_counter)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            from infra.telemetry import log_error
+            log_error(e, {"phase": "stream_read"})
+        except Exception:
+            pass
     if state.streaming:
         state.root.after(40, lambda: _tick_stream(state))  # ~25fps
 
 
 def toggle_transmision(state: AppState):
-    # Transmisión puede convivir con timelapse (solo se pausa durante la foto).
-    if state.maniobra_running:
-        messagebox.showwarning("En ejecución",
-                               "La maniobra está en ejecución.\nDetén la maniobra para realizar esta acción.")
-        return
+    # Live puede coexistir con timelapse/maniobra sólo si usuario lo confirma (se detienen primero).
     if state.streaming:
         stream_off(state)
     else:
@@ -958,38 +1338,115 @@ def take_and_update(state: AppState):
         return
     # Sacar foto está permitido durante timelapse.
     if state.is_capturing:
-        set_status(state)("Ya hay una captura en curso..."); return
-
-    # Si transmisión está activa, pausarla y marcar reanudación
-    _pause_stream_if_needed(state)
+        # Encolar si hay espacio
+        if len(state.capture_queue) < state.max_capture_queue:
+            state.capture_queue.append({"tipo": "manual"})
+            set_status(state)(f"Captura en cola ({len(state.capture_queue)})...")
+            try:
+                from infra.telemetry import log_event
+                log_event("capture_queued", kind="manual", queue_len=len(state.capture_queue))
+            except Exception:
+                pass
+        else:
+            set_status(state)("Cola de capturas llena, ignorada.")
+        return
 
     state.is_capturing = True
     set_status(state)("Preparando captura...")
 
     def _work():
         try:
-            # Tamaño preferido: usa resolución de FOTO y si no hay, cae a la general
+            try:
+                from infra.telemetry import log_event
+                log_event("manual_photo_start")
+            except Exception:
+                pass
             label = state.photo_resolution_label or state.current_resolution_label or DEFAULT_RES_LABEL
             wh = _find_res(label)
             prefer = [wh] if wh else None
 
-            take_photo(
-                dest_folder=state.photo_dir,
-                prefer_sizes=prefer,
-                jpeg_quality=95,
-                auto_resume_stream=False,
-                block_until_done=True
-            )
-            msg = "Foto tomada."
+            # Pasamos un result_holder para obtener resolución efectiva y estado
+            result_holder = {}
+            try:
+                from infra.telemetry import log_event
+                log_event("capture_requested", kind="manual", requested_label=label, prefer=prefer)
+            except Exception:
+                pass
+            try:
+                ok = take_photo(
+                    dest_folder=state.photo_dir,
+                    prefer_sizes=prefer,
+                    jpeg_quality=95,
+                    auto_resume_stream=True,
+                    block_until_done=True,
+                    result_holder=result_holder
+                )
+            except Exception as e:
+                try:
+                    from infra.telemetry import log_error
+                    log_error(e, {"phase": "take_photo_call_manual"})
+                except Exception:
+                    pass
+                ok = False
+            # Si la llamada bloqueante devolvió True intentamos leer result_holder (si el manager lo rellenó)
+            eff_label = None
+            try:
+                if ok and isinstance(result_holder, dict) and result_holder.get("eff_w"):
+                    w = result_holder.get("eff_w")
+                    h = result_holder.get("eff_h")
+                    eff_label = f"{w}x{h}"
+            except Exception:
+                eff_label = None
+            if ok and not result_holder.get("timeout") and not result_holder.get("cancelled"):
+                msg = "Foto tomada."
+                try:
+                    from infra.telemetry import log_event
+                    log_event("manual_photo_ok", resolution=eff_label or label)
+                except Exception:
+                    pass
+            else:
+                msg = "Foto cancelada/timeout/error."
+            # Si hubo mismatch, considerar downgrade automático
+            try:
+                from config import settings as _cfg
+                thresh = getattr(_cfg, "RES_MISMATCH_DOWNGRADE_THRESHOLD", 2)
+            except Exception:
+                thresh = 2
+            try:
+                if isinstance(result_holder, dict) and result_holder.get("mismatch"):
+                    cnt = state.res_mismatch_counters.get(label, 0) + 1
+                    state.res_mismatch_counters[label] = cnt
+                    if cnt >= thresh:
+                        _maybe_downgrade_resolution(state, label)
+                else:
+                    # éxito o no-mismatch -> reset counter
+                    if label in state.res_mismatch_counters:
+                        state.res_mismatch_counters.pop(label, None)
+            except Exception:
+                pass
         except Exception as e:
             msg = f"Error: {e}"
+            try:
+                from infra.telemetry import log_error
+                log_error(e, {"phase": "manual_photo"})
+            except Exception:
+                pass
         finally:
             def _finish():
                 set_status(state)(msg)
                 update_main_image(state)
                 state.is_capturing = False
-                # Si pausamos transmisión para esta acción, reanudar
-                _resume_stream_if_marked(state)
+                # Procesar siguiente en cola si existe
+                if state.capture_queue:
+                    nxt = state.capture_queue.pop(0)
+                    try:
+                        from infra.telemetry import log_event
+                        log_event("capture_dequeued", kind=nxt.get("tipo"))
+                    except Exception:
+                        pass
+                    # Por ahora sólo manual soportado
+                    take_and_update(state)
+                _process_deferred_actions(state)
             state.root.after(0, _finish)
 
     threading.Thread(target=_work, daemon=True).start()
@@ -1008,9 +1465,23 @@ def toggle_timelapse(state: AppState):
         # lee config (frecuencia en MINUTOS)
         freq_min = state.cfg.data.get("frecuencia_min", state.cfg.data.get("frecuencia", "10"))
         try:
-            state.interval_ms = int(float(freq_min) * 60_000)
+            # frecuencia en minutos -> ms
+            requested_ms = int(float(freq_min) * 60_000)
         except Exception:
-            state.interval_ms = 10 * 60_000
+            requested_ms = 10 * 60_000
+
+        # Aplicar floor mínimo en segundos definido en settings
+        try:
+            from config.settings import TIME_LAPSE_MIN_INTERVAL_S
+        except Exception:
+            TIME_LAPSE_MIN_INTERVAL_S = 5
+        min_ms = int(TIME_LAPSE_MIN_INTERVAL_S * 1000)
+        applied_ms = requested_ms
+        adjusted = False
+        if requested_ms < min_ms:
+            applied_ms = min_ms
+            adjusted = True
+        state.interval_ms = applied_ms
 
         dias_cfg = state.cfg.data.get("dias", [True]*7)
         dias_lista = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
@@ -1022,11 +1493,26 @@ def toggle_timelapse(state: AppState):
         state.timelapse_running = True
         set_status(state)("Timelapse: activado. Esperando próxima foto...")
         update_timelapse_ui(state)
+        try:
+            state.cfg.set(timelapse_activo=True)
+            from infra.telemetry import log_event
+            if adjusted:
+                log_event("timelapse_on", interval_ms=state.interval_ms, requested_ms=requested_ms, adjusted=True)
+            else:
+                log_event("timelapse_on", interval_ms=state.interval_ms, requested_ms=requested_ms, adjusted=False)
+        except Exception:
+            pass
         _schedule_timelapse_tick(state)
     else:
         state.timelapse_running = False
         set_status(state)("Timelapse detenido.")
         update_timelapse_ui(state)
+        try:
+            state.cfg.set(timelapse_activo=False)
+            from infra.telemetry import log_event
+            log_event("timelapse_off")
+        except Exception:
+            pass
 
 
 def _schedule_timelapse_tick(state: AppState):
@@ -1062,17 +1548,38 @@ def _timelapse_tick(state: AppState):
             set_status(state)("Timelapse: fuera de horario...")
             return _schedule_timelapse_tick(state)
 
-    # --- Captura del timelapse ---
-    # Si transmisión está activa, pausa SOLO durante la foto y reanuda al terminar
-    paused_stream_here = False
-    if state.streaming:
-        paused_stream_here = True
-        try:
-            camera_manager.stop_stream()
-        except Exception:
-            pass
-        state.streaming = False
-        update_stream_ui(state)
+    # Throttle defensivo: si la última captura terminó hace muy poco, esperar.
+    try:
+        import time as _time
+        last = getattr(state, "last_timelapse_capture_ts", 0.0) or 0.0
+        since_last = _time.time() - last
+        # mínimo entre 0.8s y la mitad del intervalo configurado
+        min_gap = max(0.8, (state.interval_ms / 1000.0) * 0.5)
+        if last > 0 and since_last < min_gap:
+            try:
+                from infra.telemetry import log_event
+                log_event("timelapse_throttled", since_last_s=round(since_last, 3), min_gap_s=min_gap)
+            except Exception:
+                pass
+            set_status(state)("Timelapse: esperando estabilizar antes de siguiente captura...")
+            return _schedule_timelapse_tick(state)
+    except Exception:
+        pass
+
+    # --- Captura del timelapse --- (no apagamos manualmente el stream: CameraManager se encarga)
+    if state.is_capturing:
+        # Cola timelapse si hay otra captura en progreso
+        if len(state.capture_queue) < state.max_capture_queue:
+            state.capture_queue.append({"tipo": "timelapse"})
+            set_status(state)(f"Timelapse: captura en cola ({len(state.capture_queue)})...")
+            try:
+                from infra.telemetry import log_event
+                log_event("capture_queued", kind="timelapse", queue_len=len(state.capture_queue))
+            except Exception:
+                pass
+        else:
+            set_status(state)("Timelapse: cola llena, tick ignorado.")
+        return _schedule_timelapse_tick(state)
 
     set_status(state)("Timelapse: capturando...")
     # Usar resolución de FOTO
@@ -1082,25 +1589,101 @@ def _timelapse_tick(state: AppState):
 
     def _do_capture():
         try:
-            take_photo(
-                dest_folder=state.photo_dir,
-                prefer_sizes=prefer,
-                jpeg_quality=95,
-                auto_resume_stream=False,
-                block_until_done=True
-            )
-            msg = "Timelapse: foto tomada."
+            # Marcar que hay una captura en curso para evitar solapamientos con otros ticks
+            state.is_capturing = True
+            try:
+                from infra.telemetry import log_event
+                log_event("timelapse_capture_start")
+            except Exception:
+                pass
+            # solicitar resultado efectivo
+            result_holder = {}
+            try:
+                from infra.telemetry import log_event
+                log_event("capture_requested", kind="timelapse", requested_label=label, prefer=prefer)
+            except Exception:
+                pass
+            try:
+                ok = take_photo(
+                    dest_folder=state.photo_dir,
+                    prefer_sizes=prefer,
+                    jpeg_quality=95,
+                    auto_resume_stream=True,
+                    block_until_done=True,
+                    result_holder=result_holder
+                )
+            except Exception as e:
+                try:
+                    from infra.telemetry import log_error
+                    log_error(e, {"phase": "take_photo_call_timelapse"})
+                except Exception:
+                    pass
+                ok = False
+            eff_label = None
+            try:
+                if ok and isinstance(result_holder, dict) and result_holder.get("eff_w"):
+                    w = result_holder.get("eff_w")
+                    h = result_holder.get("eff_h")
+                    eff_label = f"{w}x{h}"
+            except Exception:
+                eff_label = None
+            if ok and not result_holder.get("timeout") and not result_holder.get("cancelled"):
+                msg = "Timelapse: foto tomada."
+                try:
+                    from infra.telemetry import log_event
+                    log_event("timelapse_capture_ok", resolution=eff_label or label)
+                except Exception:
+                    pass
+                else:
+                    msg = "Timelapse: foto cancelada/timeout/error."
+                # mismatch handling for timelapse
+                try:
+                    from config import settings as _cfg
+                    thresh = getattr(_cfg, "RES_MISMATCH_DOWNGRADE_THRESHOLD", 2)
+                except Exception:
+                    thresh = 2
+                try:
+                    if isinstance(result_holder, dict) and result_holder.get("mismatch"):
+                        cnt = state.res_mismatch_counters.get(label, 0) + 1
+                        state.res_mismatch_counters[label] = cnt
+                        if cnt >= thresh:
+                            _maybe_downgrade_resolution(state, label)
+                    else:
+                        if label in state.res_mismatch_counters:
+                            state.res_mismatch_counters.pop(label, None)
+                except Exception:
+                    pass
         except Exception as e:
             msg = f"Timelapse: error de captura: {e}"
+            try:
+                from infra.telemetry import log_error
+                log_error(e, {"phase": "timelapse_capture"})
+            except Exception:
+                pass
         finally:
             def _finish():
                 set_status(state)(msg)
                 update_main_image(state)
-                # Reanudar transmisión si la pausamos aquí
-                if paused_stream_here:
-                    stream_on(state)
                 set_status(state)("Timelapse: esperando próxima captura...")
+                # limpiar flag de captura y registrar timestamp para throttling
+                try:
+                    state.is_capturing = False
+                    state.last_timelapse_capture_ts = time.time()
+                except Exception:
+                    pass
                 _schedule_timelapse_tick(state)
+                # Procesar cola si quedó algo (timelapse encadena) pero no saturar UI
+                if state.capture_queue and not state.is_capturing:
+                    nxt = state.capture_queue.pop(0)
+                    try:
+                        from infra.telemetry import log_event
+                        log_event("capture_dequeued", kind=nxt.get("tipo"))
+                    except Exception:
+                        pass
+                    if nxt.get("tipo") == "timelapse" and state.timelapse_running:
+                        # Disparar inmediatamente siguiente sin esperar intervalo adicional
+                        _timelapse_tick(state)
+                _process_deferred_actions(state)
             state.root.after(0, _finish)
 
     threading.Thread(target=_do_capture, daemon=True).start()
@@ -1111,13 +1694,19 @@ def _timelapse_tick(state: AppState):
 # =========================
 def toggle_maniobra(state: AppState):
     if not state.maniobra_running:
+        state.maniobra_cancelled_flag = False
+        state.maniobra_was_streaming = state.streaming
+        try:
+            from infra.telemetry import log_event
+            log_event("maniobra_start")
+        except Exception:
+            pass
         # Si timelapse está corriendo → pausar y recordar que hay que reanudarlo.
         if state.timelapse_running:
             state.timelapse_running = False
             update_timelapse_ui(state)
             state.timelapse_paused_by_maniobra = True
             set_status(state)("Timelapse pausado por maniobra.")
-
         # Pausar transmisión si está activa y marcar reanudar después
         _pause_stream_if_needed(state)
 
@@ -1141,34 +1730,149 @@ def toggle_maniobra(state: AppState):
             if datetime.now() >= fin or not state.maniobra_running:
                 state.maniobra_running = False
                 update_maniobra_ui(state)
-                set_status(state)("Maniobra finalizada.")
-                # Reanudar transmisión si la pausamos para esto
-                _resume_stream_if_marked(state)
-                # Reanudar timelapse si lo habíamos pausado por maniobra
-                if state.timelapse_paused_by_maniobra:
-                    state.timelapse_paused_by_maniobra = False
-                    toggle_timelapse(state)
+                # Evitar doble evento si fue cancelada
+                if not state.maniobra_cancelled_flag:
+                    set_status(state)("Maniobra finalizada.")
+                    # Reanudar transmisión si la pausamos y originalmente estaba activa
+                    _resume_stream_if_marked(state)
+                    if state.maniobra_was_streaming and (not state.streaming):
+                        # Si originalmente estaba en ON pero no marcamos reanudación, encender
+                        stream_on(state)
+                    # Reanudar timelapse si lo habíamos pausado por maniobra.
+                    # Evitamos llamar a toggle_timelapse() para no disparar
+                    # comprobaciones/diálogos adicionales ni posibles ramas
+                    # que bloqueen la reanudación. Restauramos el estado
+                    # directamente y programamos el siguiente tick.
+                    if state.timelapse_paused_by_maniobra:
+                        state.timelapse_paused_by_maniobra = False
+                        try:
+                            state.timelapse_running = True
+                            update_timelapse_ui(state)
+                            # Persistir estado en configuración si es posible
+                            try:
+                                state.cfg.set(timelapse_activo=True)
+                            except Exception:
+                                pass
+                            # Asegurar que el timelapse se programe de nuevo
+                            _schedule_timelapse_tick(state)
+                            # Emitir telemetría indicando reanudación por maniobra
+                            try:
+                                from infra.telemetry import log_event
+                                log_event("timelapse_resumed_by_maniobra", cancelled=False, ts=time.time())
+                            except Exception:
+                                pass
+                        except Exception:
+                            # Si algo falla, al menos limpiar el flag
+                            state.timelapse_paused_by_maniobra = False
+                    try:
+                        from infra.telemetry import log_event
+                        state.last_timelapse_capture_ts = time.time()
+                        log_event("maniobra_end")
+                    except Exception:
+                        pass
                 return
+            # Evitar solapamientos de capturas
+            if state.maniobra_capture_in_progress:
+                state.root.after(100, _tick)
+                return
+            state.maniobra_capture_in_progress = True
 
-            # Toma una foto (timelapse está pausado)
-            threading.Thread(
-                target=lambda: take_photo(state.photo_dir, block_until_done=True, auto_resume_stream=False),
-                daemon=True
-            ).start()
-            update_main_image(state)
-            state.root.after(int(intervalo_s * 1000), _tick)
+            def _cap():
+                try:
+                    from video_capture import camera_manager as _cm
+                    # Usar la resolución seleccionada por el usuario para evitar mismatches altos
+                    label_req = state.photo_resolution_label or state.current_resolution_label or DEFAULT_RES_LABEL
+                    wh = _find_res(label_req)
+                    prefer = [wh] if wh else None
+                    result_holder = {}
+                    try:
+                        from infra.telemetry import log_event
+                        log_event("capture_requested", kind="maniobra", requested_label=label_req, prefer=prefer)
+                    except Exception:
+                        pass
+                    # Marcar captura en curso para coordinar con otros flujos
+                    state.is_capturing = True
+                    try:
+                        ok = _cm.take_photo(state.photo_dir, prefer_sizes=prefer, block_until_done=True, auto_resume_stream=True, result_holder=result_holder)
+                    except Exception as e:
+                        try:
+                            from infra.telemetry import log_error
+                            log_error(e, {"phase": "take_photo_call_maniobra"})
+                        except Exception:
+                            pass
+                        ok = False
+                    try:
+                        from infra.telemetry import log_event
+                        if ok and not result_holder.get("timeout") and not result_holder.get("cancelled"):
+                            log_event("maniobra_capture")
+                        else:
+                            log_event("maniobra_capture_failed", timeout=bool(result_holder.get("timeout")), cancelled=bool(result_holder.get("cancelled")))
+                    except Exception:
+                        pass
+                except Exception as e:
+                    try:
+                        from infra.telemetry import log_error
+                        log_error(e, {"phase": "maniobra_capture"})
+                    except Exception:
+                        pass
+                finally:
+                    state.maniobra_capture_in_progress = False
+                    state.is_capturing = False
+                    update_main_image(state)
+                    # Procesar cola si hubiera pendiente manual (priorizar manual antes de siguiente tick)
+                    if state.capture_queue and not state.is_capturing:
+                        nxt = state.capture_queue.pop(0)
+                        try:
+                            from infra.telemetry import log_event
+                            log_event("capture_dequeued", kind=nxt.get("tipo"))
+                        except Exception:
+                            pass
+                        if nxt.get("tipo") == "manual":
+                            take_and_update(state)
+                    _process_deferred_actions(state)
+                    state.root.after(int(intervalo_s * 1000), _tick)
+
+            threading.Thread(target=_cap, daemon=True).start()
 
         _tick()
 
     else:
         # Detener maniobra manualmente
         state.maniobra_running = False
+        state.maniobra_cancelled_flag = True
         update_maniobra_ui(state)
         set_status(state)("Maniobra cancelada por el usuario.")
+        # Solicitar cancel cooperativo a la cámara para abortar cualquier captura en curso
+        try:
+            from video_capture import camera_manager as _cm
+            _cm.cancel_capture()
+        except Exception:
+            pass
         _resume_stream_if_marked(state)
+        # Restaurar timelapse pausado por maniobra sin llamar a toggle_timelapse
         if state.timelapse_paused_by_maniobra:
             state.timelapse_paused_by_maniobra = False
-            toggle_timelapse(state)
+            try:
+                state.timelapse_running = True
+                update_timelapse_ui(state)
+                try:
+                    state.cfg.set(timelapse_activo=True)
+                except Exception:
+                    pass
+                _schedule_timelapse_tick(state)
+                # Telemetría indicando cancelación y reanudación
+                try:
+                    from infra.telemetry import log_event
+                    log_event("timelapse_resumed_by_maniobra", cancelled=True, ts=time.time())
+                except Exception:
+                    pass
+            except Exception:
+                state.timelapse_paused_by_maniobra = False
+        try:
+            from infra.telemetry import log_event
+            log_event("maniobra_cancelled")
+        except Exception:
+            pass
 
 
 # =========================
@@ -1373,36 +2077,47 @@ def open_gallery_window(state: AppState):
         grid = tk.Frame(cal, bg=BG_COLOR); grid.pack(padx=6, pady=6)
         _refresh_grid()
 
-        # cerrar si pierde foco
-                # --- Cerrar el calendario si hace click fuera / ESC ---
-        def _destroy_cal():
-            try: win.unbind_all("<Button-1>")
-            except Exception: pass
-            try: cal.destroy()
-            except Exception: pass
+    # cerrar si pierde foco
+    # Watchdog con periodo de gracia (no dispara en primeros 5s tras encender stream)
+        def _watchdog():
+            try:
+                if getattr(state, 'streaming', False):
+                    now_ts = time.time()
+                    # Gracia: si frame_counter < 30 (~<1.2s) o stream recién encendió hace <5s (approx)
+                    if state.frame_counter < 30:
+                        pass
+                    else:
+                        if getattr(state, 'last_frame_ts', 0) and (now_ts - state.last_frame_ts) > 3.0:
+                            try:
+                                from infra.telemetry import log_event
+                                log_event("stream_watchdog_trigger")
+                            except Exception:
+                                pass
+                            try:
+                                camera_manager.stop_stream()
+                            except Exception:
+                                pass
+                            try:
+                                camera_manager.start_stream()
+                            except Exception as e:
+                                try:
+                                    from infra.telemetry import log_error
+                                    log_error(e, {"phase": "watchdog_restart"})
+                                except Exception:
+                                    pass
+                            else:
+                                state.last_frame_ts = time.time()
+                                try:
+                                    from infra.telemetry import log_event
+                                    log_event("stream_watchdog_recover")
+                                except Exception:
+                                    pass
+            finally:
+                state.root.after(2000, _watchdog)
+        state.root.after(2000, _watchdog)
 
-        # Cerrar si pierde foco (cuando aplica)
-        cal.bind("<FocusOut>", lambda _e: _destroy_cal())
-
-        # Cerrar con ESC
-        cal.bind("<Escape>", lambda _e: _destroy_cal())
-
-        # Cerrar al hacer click fuera del popup
-        def _on_click_away(e):
-            if not cal.winfo_exists():
-                return
-            # ¿Click fuera del rectángulo del calendario?
-            cx, cy = cal.winfo_rootx(), cal.winfo_rooty()
-            cw, ch = cal.winfo_width(), cal.winfo_height()
-            if not (cx <= e.x_root <= cx + cw and cy <= e.y_root <= cy + ch):
-                _destroy_cal()
-
-        # Registramos el detector de click global mientras el popup está abierto
-        win.bind_all("<Button-1>", _on_click_away, add="+")
-
-
-    # Entradas de fecha
-    tk.Label(ctrl, text="Desde:", bg=BG_COLOR, fg=FG_COLOR).pack(side="left", padx=(10,4))
+    # Filtros de galería (from/to fechas) – asegurar variables definidas
+    tk.Label(ctrl, text="Desde:", bg=BG_COLOR, fg=FG_COLOR).pack(side="left", padx=(4,4))
     from_var = tk.StringVar()
     from_ent = tk.Entry(ctrl, textvariable=from_var, width=12); from_ent.pack(side="left")
     tk.Button(ctrl, text="📅", command=lambda: _open_datepicker(from_ent, from_var),

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import tkinter as tk
 from infra.logging_setup import setup_logging
+from infra.telemetry import init_telemetry, log_event
 from ui.main_window import build_main_window
 
 # --- Alta DPI (Windows) ---
@@ -28,6 +29,14 @@ def main():
         pass
 
     state = build_main_window(root)
+    # Telemetría básica: base_dir = carpeta de log principal
+    try:
+        import os
+        base_dir = os.path.dirname(LOG_PATH)
+        init_telemetry(base_dir)
+        log_event("app_started")
+    except Exception:
+        pass
     root.mainloop()
 
 if __name__ == "__main__":

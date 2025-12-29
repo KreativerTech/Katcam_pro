@@ -1,179 +1,186 @@
-; KatcamPro.iss — Instalador Inno Setup (sin preprocesador)
-; Estructura sugerida:
-; Katcam_pro\
-; ├─ assets\
-; │   ├─ katcam_multi.ico
-; │   ├─ logo_katcam.png
-; │   ├─ logo_kreativer.png
-; │   └─ header-katcam.jpg
-; ├─ dist\
-; │   └─ KatcamPro.exe
-; └─ installer\
-;     ├─ KatcamPro.iss          ; este archivo
-;     ├─ wizard_image.bmp       ; 164x314
-;     └─ wizard_small_image.bmp ; 55x55
+; Katcam Pro Installer (.iss) - ROOT (coincide con tu árbol). AppData config, SIN GPS.
+
+#define APP_VERSION "2.9.0"
+#define APP_NAME    "Katcam Pro"
+#define APP_PUBLISHER "Kreativer"
 
 [Setup]
 ; --- Datos de la app ---
-AppId={{F3F7E7B9-4EC1-4D4B-B2D4-1C9D2E12A3D7}
-AppName=Katcam Pro
-AppVersion=2.3.0
-AppPublisher=KreativerTech
-AppPublisherURL=https://kreativer.tech
+AppId={{F3F7E7B9-4EC1-4D4B-B2D4-1C9D2E12A3D7}}
+AppName={#APP_NAME}
+AppVersion={#APP_VERSION}
+AppPublisher={#APP_PUBLISHER}
+AppPublisherURL=https://www.kreativer.cl
 
 ; --- Rutas/estilo ---
 DefaultDirName={autopf}\KreativerTech\Katcam Pro
 DefaultGroupName=Katcam Pro
 DisableProgramGroupPage=yes
-OutputBaseFilename=KatcamPro-Setup-2.3.0
-Compression=lzma
-SolidCompression=yes
-WizardStyle=modern
+OutputBaseFilename=KatcamPro-Setup-{#APP_VERSION}
+OutputDir=Output
 ArchitecturesInstallIn64BitMode=x64
-
-; Icono y bitmaps del wizard
+Compression=lzma2
+SolidCompression=yes
 SetupIconFile=..\assets\katcam_multi.ico
 WizardImageFile=wizard_image.bmp
 WizardSmallImageFile=wizard_small_image.bmp
 
-; Para actualizar instalaciones con archivos en uso
-CloseApplications=yes
-ChangesAssociations=no
-
-[Languages]
-Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
-
 [Tasks]
-Name: "desktopicon"; Description: "Crear acceso directo en el Escritorio"; GroupDescription: "Accesos directos:"; Flags: unchecked
-Name: "autostart"; Description: "Iniciar Katcam Pro con Windows"; GroupDescription: "Opciones adicionales:"; Flags: unchecked
-Name: "runapp"; Description: "Ejecutar Katcam Pro al finalizar"; GroupDescription: "Acciones al finalizar:"; Flags: checkedonce
-
-[Dirs]
-; Carpeta de datos compartidos (JSON de configuración)
-Name: "{commonappdata}\KreativerTech\KatcamPro"; Permissions: users-modify; Flags: uninsneveruninstall
-
-[Files]
-; Binario principal (salida de PyInstaller)
-Source: "..\dist\KatcamPro.exe"; DestDir: "{app}"; Flags: ignoreversion
-; Assets usados por la app en runtime
-Source: "..\assets\*"; DestDir: "{app}\assets"; Flags: recursesubdirs ignoreversion
-
-[Icons]
-Name: "{group}\Katcam Pro"; Filename: "{app}\KatcamPro.exe"; IconFilename: "{app}\assets\katcam_multi.ico"; WorkingDir: "{app}"
-Name: "{commondesktop}\Katcam Pro"; Filename: "{app}\KatcamPro.exe"; IconFilename: "{app}\assets\katcam_multi.ico"; Tasks: desktopicon; WorkingDir: "{app}"
+Name: "desktopicon"; Description: "Crear acceso directo en el escritorio"; GroupDescription: "Accesos directos:"; Flags: unchecked
 
 [Registry]
-; Autostart opcional (usuario actual)
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
-    ValueName: "Katcam Pro"; ValueData: """{app}\KatcamPro.exe"""; Tasks: autostart; Flags: uninsdeletevalue
+; Autostart activado por defecto tras instalar. El usuario puede desactivarlo desde la app.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
+ValueType: string; ValueName: "KatcamPro"; \
+ValueData: "{app}\KatcamPro.exe"; Flags: uninsdeletevalue
+
+[Files]
+Source: "..\dist\KatcamPro\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\Katcam Pro"; Filename: "{app}\KatcamPro.exe"
+Name: "{commondesktop}\Katcam Pro"; Filename: "{app}\KatcamPro.exe"; Tasks: desktopicon
 
 [Run]
-; Ejecutar al finalizar si el usuario marca la opción
-Filename: "{app}\KatcamPro.exe"; Description: "Ejecutar Katcam Pro"; Flags: nowait postinstall skipifsilent; Tasks: runapp
+Filename: "{app}\KatcamPro.exe"; Description: "Ejecutar Katcam Pro"; Flags: nowait postinstall skipifsilent
 
-;-------------------------
-; PÁGINA PERSONALIZADA: Datos del proyecto
-;-------------------------
+; ===============================
+;           CÓDIGO
+; ===============================
 [Code]
-var
-  PgDatos: TInputQueryWizardPage;
 
-function JsonEscape(const S: string): string;
+const
+  NL = #13#10;
+  APP_VERSION_STR = '{#APP_VERSION}';
+
 var
-  i: Integer;
-  ch: Char;
+  InfoPage: TInputQueryWizardPage;
+  CameraId, Cliente, Obra, Ubicacion, Contacto: string;
+
+function Hex4(N: Integer): string;
+var
+  s: string;
+  d: Integer;
+  hexDigits: string;
+begin
+  hexDigits := '0123456789ABCDEF';
+  s := '';
+  while N > 0 do
+  begin
+    d := N mod 16;
+    s := Copy(hexDigits, d + 1, 1) + s;
+    N := N div 16;
+  end;
+  while Length(s) < 4 do
+    s := '0' + s;
+  if s = '' then
+    s := '0000';
+  Result := s;
+end;
+
+function EscapeJson(const S: string): string;
+var
+  I: Integer;
+  Ch: Char;
 begin
   Result := '';
-  for i := 1 to Length(S) do
+  for I := 1 to Length(S) do
   begin
-    ch := S[i];
-    case ch of
-      '"':  Result := Result + '\"';
-      '\':  Result := Result + '\\';
+    Ch := S[I];
+    case Ch of
+      '"': Result := Result + '\"';
+      '\': Result := Result + '\\';
     else
-      Result := Result + ch;
+      case Ord(Ch) of
+        8:  Result := Result + '\b';
+        9:  Result := Result + '\t';
+        10: Result := Result + '\n';
+        12: Result := Result + '\f';
+        13: Result := Result + '\r';
+      else
+        if Ord(Ch) < 32 then
+          Result := Result + '\u' + Hex4(Ord(Ch))
+        else
+          Result := Result + Ch;
+      end;
     end;
   end;
 end;
 
+function JsonString(const S: string): string;
+begin
+  Result := '"' + EscapeJson(S) + '"';
+end;
 
+procedure SaveConfigJson(const ACameraId, ACliente, AObra, AUbicacion, AContacto: string);
+var
+  Json, CfgDir, CfgPath: string;
+begin
+  Json :=
+    '{' + NL +
+    '  "version": "' + APP_VERSION_STR + '",' + NL +
+    '  "autor": "Kreativer",' + NL +
+    '  "soporte": "kreativer.empresa@gmail.com",' + NL +
+    '  "camera_id": ' + JsonString(ACameraId) + ',' + NL +
+    '  "cliente": '   + JsonString(ACliente)   + ',' + NL +
+    '  "obra": '      + JsonString(AObra)      + ',' + NL +
+    '  "ubicacion": ' + JsonString(AUbicacion) + ',' + NL +
+    '  "contacto": '  + JsonString(AContacto)  + NL +
+    '}';
+
+  CfgDir := ExpandConstant('{userappdata}\KatcamPro');
+  if not DirExists(CfgDir) then
+    if not ForceDirectories(CfgDir) then
+    begin
+      MsgBox('No se pudo crear: ' + CfgDir, mbError, MB_OK);
+      Exit;
+    end;
+
+  CfgPath := CfgDir + '\katcam_config.json';
+  if not SaveStringToFile(CfgPath, Json, False) then
+    MsgBox('No se pudo escribir la configuración en: ' + CfgPath, mbError, MB_OK);
+end;
+
+// ===== UI para capturar datos =====
 procedure InitializeWizard;
 begin
-  PgDatos := CreateInputQueryPage(
-    wpSelectTasks,
-    'Información del proyecto',
-    'Ingresa los datos de tu instalación',
-    'Estos datos se guardarán en la configuración de la aplicación y podrás modificarlos más tarde desde la app.'
+  InfoPage := CreateInputQueryPage(
+    wpSelectDir,
+    'Datos de Katcam',
+    'Completa los datos de identificación',
+    'Estos datos se guardarán en la configuración del usuario.'
   );
-  PgDatos.Add('Nombre del equipo:', False);
-  PgDatos.Add('Cliente:', False);
-  PgDatos.Add('Obra:', False);
-  PgDatos.Add('Ubicación:', False);
-  PgDatos.Add('Contacto:', False);
-  PgDatos.Add('GPS Latitud:', False);
-  PgDatos.Add('GPS Longitud:', False);
-
-  // Valores por defecto (vacíos)
-  PgDatos.Values[0] := '';
-  PgDatos.Values[1] := '';
-  PgDatos.Values[2] := '';
-  PgDatos.Values[3] := '';
-  PgDatos.Values[4] := '';
-  PgDatos.Values[5] := '';
-  PgDatos.Values[6] := '';
+  InfoPage.Add('Nombre del equipo (obligatorio):', False);
+  InfoPage.Add('Cliente:', False);
+  InfoPage.Add('Obra:', False);
+  InfoPage.Add('Ubicación:', False);
+  InfoPage.Add('Contacto:', False);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
-  // Validación: exigir al menos "Nombre del equipo"
-  if CurPageID = PgDatos.ID then
+  if (InfoPage <> nil) and (CurPageID = InfoPage.ID) then
   begin
-    if Trim(PgDatos.Values[0]) = '' then
+    if Trim(InfoPage.Values[0]) = '' then
     begin
-      MsgBox('Por favor ingresa el "Nombre del equipo".', mbError, MB_OK);
+      MsgBox('El "Nombre del equipo" es obligatorio.', mbError, MB_OK);
       Result := False;
+      Exit;
     end;
+    CameraId := InfoPage.Values[0];
+    Cliente  := InfoPage.Values[1];
+    Obra     := InfoPage.Values[2];
+    Ubicacion:= InfoPage.Values[3];
+    Contacto := InfoPage.Values[4];
   end;
 end;
 
+// ===== Guardar al terminar la instalación =====
 procedure CurStepChanged(CurStep: TSetupStep);
-var
-  ConfigDir, ConfigPath, Json: string;
-  camera_id, cliente, obra, ubicacion, contacto, lat, lon: string;
 begin
   if CurStep = ssPostInstall then
   begin
-    // Construir JSON y guardarlo en ProgramData
-    camera_id := JsonEscape(PgDatos.Values[0]);
-    cliente   := JsonEscape(PgDatos.Values[1]);
-    obra      := JsonEscape(PgDatos.Values[2]);
-    ubicacion := JsonEscape(PgDatos.Values[3]);
-    contacto  := JsonEscape(PgDatos.Values[4]);
-    lat       := JsonEscape(PgDatos.Values[5]);
-    lon       := JsonEscape(PgDatos.Values[6]);
-
-    ConfigDir  := ExpandConstant('{commonappdata}\KreativerTech\KatcamPro');
-    ConfigPath := ConfigDir + '\katcam_config.json';
-
-    Json :=
-      '{' + #13#10 +
-      '  "version": "2.2.0",' + #13#10 +
-      '  "autor": "KreativerTech",' + #13#10 +
-      '  "soporte": "support@kreativer.tech",' + #13#10 +
-      '  "camera_id": "' + camera_id + '",' + #13#10 +
-      '  "cliente": "' + cliente + '",' + #13#10 +
-      '  "obra": "' + obra + '",' + #13#10 +
-      '  "ubicacion": "' + ubicacion + '",' + #13#10 +
-      '  "contacto": "' + contacto + '",' + #13#10 +
-      '  "gps_lat": "' + lat + '",' + #13#10 +
-      '  "gps_lon": "' + lon + '"' + #13#10 +
-      '}';
-
-    if not DirExists(ConfigDir) then
-      ForceDirectories(ConfigDir);
-
-    if not SaveStringToFile(ConfigPath, Json, False) then
-      MsgBox('No se pudo escribir la configuración en: ' + ConfigPath, mbError, MB_OK);
+    SaveConfigJson(CameraId, Cliente, Obra, Ubicacion, Contacto);
   end;
 end;

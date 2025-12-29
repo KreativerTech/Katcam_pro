@@ -5,6 +5,11 @@ from tkinter import ttk
 from tkinter import scrolledtext as st
 from tkinter import messagebox
 from config.settings import BG_COLOR, FG_COLOR, BTN_COLOR, BTN_TEXT_COLOR, ICON_PATH
+import logging
+try:
+    from infra.telemetry import log_error as _tele_log_error
+except Exception:
+    _tele_log_error = None
 
 # Si cambiaste de sitio estas utilidades, ajusta los imports:
 from infra.paths import is_autostart_enabled, enable_autostart, disable_autostart
@@ -24,6 +29,14 @@ def open_autostart_window(root, on_status):
     win.title("Inicio con Windows")
     win.configure(bg=BG_COLOR)
     win.geometry("460x180")
+    # Mantener la ventana por encima al abrir y marcarla como transient respecto a la ventana padre
+    try:
+        win.transient(root)
+        win.lift()
+        win.attributes("-topmost", True)
+        win.focus_force()
+    except Exception:
+        pass
 
     info = tk.Label(
         win,
@@ -71,13 +84,37 @@ def open_info_window(root, state=None):
     win.overrideredirect(True)
     win.resizable(True, True)
     win.lift()
-    win.attributes("-topmost", True)
+    # Mantener la ventana Info por encima cuando se abre (topmost=True),
+    # pero aún permitir moverla desde la barra de título.
+    try:
+        win.attributes("-topmost", True)
+    except Exception:
+        pass
 
     # Barra de título personalizada
     titlebar = tk.Frame(win, bg=BTN_COLOR, height=36)
     titlebar.pack(fill="x")
     tk.Label(titlebar, text="Information", bg=BTN_COLOR, fg=BTN_TEXT_COLOR,
              font=("Arial", 12, "bold")).pack(side="left", padx=10)
+
+    # Permitir arrastrar la ventana desde la barra de título personalizada
+    def _start_move(e):
+        try:
+            win._drag_offset = (e.x, e.y)
+        except Exception:
+            win._drag_offset = (0, 0)
+
+    def _do_move(e):
+        try:
+            ox, oy = getattr(win, '_drag_offset', (0, 0))
+            nx = win.winfo_x() + (e.x - ox)
+            ny = win.winfo_y() + (e.y - oy)
+            win.geometry(f"+{nx}+{ny}")
+        except Exception:
+            pass
+
+    titlebar.bind("<Button-1>", _start_move)
+    titlebar.bind("<B1-Motion>", _do_move)
 
     def _close_info():
         if win.winfo_exists():
@@ -287,10 +324,15 @@ def open_info_window(root, state=None):
             max_h = int(sh * 0.9)
             min_h = 280
             desired_h = min(max_h, max(min_h, content_h + overhead))
-            # mantener ancho actual
+            # Mantener la posición actual (no recentrar). Ajustar para que
+            # la ventana no salga de la pantalla si el nuevo alto la cortara.
             ww = max(600, win.winfo_width())
-            x, y = (sw - ww) // 2, (sh - desired_h) // 2
-            win.geometry(f"{ww}x{desired_h}+{x}+{y}")
+            nx = win.winfo_x()
+            ny = win.winfo_y()
+            # Clamp dentro de pantalla
+            nx = max(0, min(nx, sw - ww))
+            ny = max(0, min(ny, sh - desired_h))
+            win.geometry(f"{ww}x{desired_h}+{nx}+{ny}")
         except Exception:
             pass
 
@@ -315,6 +357,14 @@ def open_edit_client_info(root, state, on_saved=None):
     win.title("Editar Información")
     win.configure(bg=BG_COLOR)
     win.geometry("600x520")
+    # Mostrar encima y recibir foco (transient respecto a la ventana padre)
+    try:
+        win.transient(root)
+        win.lift()
+        win.attributes("-topmost", True)
+        win.focus_force()
+    except Exception:
+        pass
 
     frm = tk.Frame(win, bg=BG_COLOR)
     frm.pack(fill="both", expand=True, padx=16, pady=16)
@@ -353,16 +403,62 @@ def open_edit_client_info(root, state, on_saved=None):
                 telefono=v_telefono.get(),
                 camera_id=v_camid.get(),
             )
-            messagebox.showinfo("Guardado", "Información actualizada.")
+            # Mostrar confirmación en la barra de estado (arriba) para que sea visible
+            try:
+                if state is not None and getattr(state, 'lbl_status_general', None) is not None:
+                    try:
+                        state.lbl_status_general.config(text="Información actualizada.")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # Además mostrar cuadro modal como antes (parentado a la ventana de edición)
+            try:
+                try:
+                    win.lift()
+                    win.attributes("-topmost", True)
+                except Exception:
+                    pass
+                messagebox.showinfo("Guardado", "Información actualizada.", parent=win)
+            except Exception:
+                pass
             try:
                 root.event_generate("<<INFO_UPDATED>>", when="tail")
             except Exception:
                 pass
             if callable(on_saved):
-                on_saved()
+                def _safe_on_saved():
+                    try:
+                        on_saved()
+                    except Exception as _e:
+                        try:
+                            logging.getLogger().exception("on_saved callback failed")
+                        except Exception:
+                            pass
+                        try:
+                            if _tele_log_error:
+                                _tele_log_error(_e, {"phase": "on_saved_callback"})
+                        except Exception:
+                            pass
+
+                try:
+                    # Ejecutar la callback de refresco de forma asíncrona en el loop
+                    # de eventos para evitar reentradas que provocan errores de widget
+                    root.after(0, _safe_on_saved)
+                except Exception:
+                    try:
+                        _safe_on_saved()
+                    except Exception:
+                        pass
             win.destroy()
         except Exception as e:
-            messagebox.showerror("Guardar", f"Error al guardar:\n{e}")
+            try:
+                messagebox.showerror("Guardar", f"Error al guardar:\n{e}", parent=win)
+            except Exception:
+                try:
+                    messagebox.showerror("Guardar", f"Error al guardar:\n{e}")
+                except Exception:
+                    pass
 
     btns = tk.Frame(win, bg=BG_COLOR)
     btns.pack(fill="x", padx=16, pady=8)

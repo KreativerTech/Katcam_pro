@@ -125,14 +125,17 @@ class ConfigWindow:
             self.on_resolution_change = on_resolution_change  # firma: on_resolution_change(new_label:str)
 
             self.win = tk.Toplevel(root)
-            self.win.withdraw()  # Oculta la ventana mientras se configura
             set_icon(self.win)
             self.win.title("Configuración")
             self.win.configure(bg=BG_COLOR)
             self.win.geometry("900x640")
             self.win.lift()
             self.win.attributes("-topmost", True)
-            self.win.overrideredirect(True)
+            # Ventana sin bordes (pedido del usuario)
+            try:
+                self.win.overrideredirect(True)
+            except Exception:
+                pass
 
             # Barra de título personalizada
             titlebar = tk.Frame(self.win, bg=BTN_COLOR, height=36)
@@ -196,9 +199,16 @@ class ConfigWindow:
             btn_save.pack(pady=(0, 10))
 
             self._load_from_state()
-            # Mostrar la ventana ya lista (evita tener que apretar dos veces)
+            # Centrar y mostrar (sin usar withdraw/deiconify para evitar que se "pierda")
             try:
-                self.win.deiconify()
+                self.win.update_idletasks()
+                sw = self.win.winfo_screenwidth()
+                sh = self.win.winfo_screenheight()
+                w = 900
+                h = 640
+                x = max(0, int((sw - w) / 2))
+                y = max(0, int((sh - h) / 3))
+                self.win.geometry(f"{w}x{h}+{x}+{y}")
                 self.win.lift()
                 self.win.focus_force()
             except Exception:
@@ -223,19 +233,35 @@ class ConfigWindow:
         self.detect_btn.grid(row=row, column=2, sticky="w", padx=6, pady=6)
         row+=1
 
+        # --- Resoluciones soportadas (modo rápido: marcar luego asíncrono) ---
+        res_labels_all = [t for (t, _, _) in RESOLUTIONS]
+        initial_supported = getattr(self.state, "supported_resolution_labels", None)
+        if initial_supported:
+            self._supported_set = set(initial_supported)
+        else:
+            # desconocido aún: tratamos todas como soportadas hasta terminar probe
+            self._supported_set = set(res_labels_all)
+        display_values = list(res_labels_all)  # sin sufijos todavía
+
+        def _first_supported(fallback):
+            for l in res_labels_all:
+                if l in self._supported_set:
+                    return l
+            return fallback
+
         # Resolución FOTO
         tk.Label(self.tab_cam, text="Resolución (Foto):", bg=BG_COLOR, fg=FG_COLOR
                 ).grid(row=row, column=0, sticky="e", padx=8, pady=6)
-        res_labels = [t for (t, _, _) in RESOLUTIONS]
-        self.photo_res_var = tk.StringVar(
-            value=self.state.cfg.data.get(
-                "photo_resolution_label",
-                self.state.cfg.data.get("capture_resolution_label", self.state.photo_resolution_label or res_labels[2])
-            )
+        default_photo = self.state.cfg.data.get(
+            "photo_resolution_label",
+            self.state.cfg.data.get("capture_resolution_label", self.state.photo_resolution_label or res_labels_all[0])
         )
+        if default_photo not in self._supported_set:
+            default_photo = _first_supported(default_photo)
+        self.photo_res_var = tk.StringVar(value=default_photo)
         self.photo_res_combo = ttk.Combobox(
-            self.tab_cam, textvariable=self.photo_res_var, values=res_labels,
-            state="readonly", width=28
+            self.tab_cam, textvariable=self.photo_res_var, values=display_values,
+            state="readonly", width=30
         )
         self.photo_res_combo.grid(row=row, column=1, sticky="w", padx=6, pady=6)
         row+=1
@@ -243,30 +269,96 @@ class ConfigWindow:
         # Resolución VIDEO/Stream
         tk.Label(self.tab_cam, text="Resolución (Video/Stream):", bg=BG_COLOR, fg=FG_COLOR
                 ).grid(row=row, column=0, sticky="e", padx=8, pady=6)
-        self.video_res_var = tk.StringVar(
-            value=self.state.cfg.data.get(
-                "video_resolution_label",
-                self.state.cfg.data.get("capture_resolution_label", self.state.video_resolution_label or res_labels[2])
-            )
+        default_video = self.state.cfg.data.get(
+            "video_resolution_label",
+            self.state.cfg.data.get("capture_resolution_label", self.state.video_resolution_label or res_labels_all[0])
         )
+        if default_video not in self._supported_set:
+            default_video = _first_supported(default_video)
+        self.video_res_var = tk.StringVar(value=default_video)
         self.video_res_combo = ttk.Combobox(
-            self.tab_cam, textvariable=self.video_res_var, values=res_labels,
-            state="readonly", width=28
+            self.tab_cam, textvariable=self.video_res_var, values=display_values,
+            state="readonly", width=30
         )
         self.video_res_combo.grid(row=row, column=1, sticky="w", padx=6, pady=6)
 
-        # Cuando cambias la resolución de VIDEO, intentamos aplicar al vuelo
-        # usando el callback on_resolution_change(new_label) esperado por main_window.
-        def _on_video_res_change(_evt=None):
+        def _normalize(sel: str):
+            return sel.replace(" (no soportada)", "") if sel.endswith("(no soportada)") else sel
+
+        def _is_unsupported(label: str) -> bool:
+            return label not in self._supported_set
+
+        def _apply_video(_evt=None):
+            raw = self.video_res_var.get()
+            lbl = _normalize(raw)
+            if _is_unsupported(lbl):
+                messagebox.showwarning("No soportada", "La cámara no soporta esa resolución.")
+                self.video_res_var.set(self.state.video_resolution_label)
+                return
+            self.state.video_resolution_label = lbl
+            try:
+                self.state.cfg.set(video_resolution_label=lbl)
+            except Exception:
+                pass
             try:
                 if callable(self.on_resolution_change):
-                    self.on_resolution_change(self.video_res_var.get())
-            except TypeError:
-                # Por compatibilidad si la firma cambiara en el futuro.
+                    self.on_resolution_change(lbl)
+            except Exception:
                 pass
-        self.video_res_combo.bind("<<ComboboxSelected>>", _on_video_res_change)
-        row+=1
 
+        def _apply_photo(_evt=None):
+            raw = self.photo_res_var.get()
+            lbl = _normalize(raw)
+            if _is_unsupported(lbl):
+                messagebox.showwarning("No soportada", "La cámara no soporta esa resolución.")
+                self.photo_res_var.set(self.state.photo_resolution_label)
+                return
+            self.state.photo_resolution_label = lbl
+            try:
+                self.state.cfg.set(photo_resolution_label=lbl)
+            except Exception:
+                pass
+
+        self.video_res_combo.bind("<<ComboboxSelected>>", _apply_video)
+        self.photo_res_combo.bind("<<ComboboxSelected>>", _apply_photo)
+
+        # Lanzar sondeo en background si no se conoce aún
+        if not initial_supported:
+            def _async_probe():
+                try:
+                    from video_capture import camera_manager as _cm
+                    sup = _cm.probe_resolutions(RESOLUTIONS)
+                except Exception:
+                    sup = res_labels_all
+                self.state.supported_resolution_labels = sup
+                def _apply_supported():
+                    self._supported_set = set(sup or res_labels_all)
+                    new_values = []
+                    for lbl in res_labels_all:
+                        if lbl in self._supported_set:
+                            new_values.append(lbl)
+                        else:
+                            new_values.append(f"{lbl} (no soportada)")
+                    try:
+                        self.photo_res_combo["values"] = new_values
+                        self.video_res_combo["values"] = new_values
+                        # Ajustar selección si quedó en una no soportada
+                        if self.photo_res_var.get().endswith("(no soportada)"):
+                            self.photo_res_var.set(next((l for l in res_labels_all if l in self._supported_set), self.photo_res_var.get()))
+                        if self.video_res_var.get().endswith("(no soportada)"):
+                            self.video_res_var.set(next((l for l in res_labels_all if l in self._supported_set), self.video_res_var.get()))
+                    except Exception:
+                        pass
+                try:
+                    self.win.after(0, _apply_supported)
+                except Exception:
+                    pass
+            try:
+                threading.Thread(target=_async_probe, daemon=True).start()
+            except Exception:
+                pass
+
+        row+=1
         # Autoajuste y ajustes avanzados
         tk.Button(self.tab_cam, text="Autoajuste (expo/WB)", command=self.on_auto_wb,
                   bg=BTN_COLOR, fg=BTN_TEXT_COLOR, bd=0,
@@ -324,7 +416,6 @@ class ConfigWindow:
         try:
             if not cams:
                 self.cam_combo["values"] = []
-                # mantener selección actual si había
                 cur = self.cam_var.get()
                 if not cur:
                     self.cam_var.set("0")
@@ -336,11 +427,6 @@ class ConfigWindow:
                 if cur not in values:
                     self.cam_var.set(values[0])
         finally:
-            # re-habilitar
-            try:
-                self.cam_combo.configure(state="readonly")
-            except Exception:
-                pass
             try:
                 self.detect_btn.configure(state="normal", text="Detectar")
             except Exception:
@@ -353,16 +439,16 @@ class ConfigWindow:
         tk.Label(self.tab_tl, text="Timelapse", font=("Arial", 16, "bold"),
                  bg=BG_COLOR, fg=FG_COLOR).grid(row=row, column=0, columnspan=2, sticky="w", pady=(10, 8)); row+=1
 
+        # Frecuencia minutos
         tk.Label(self.tab_tl, text="Frecuencia (MINUTOS):", bg=BG_COLOR, fg=FG_COLOR
                 ).grid(row=row, column=0, sticky="e", padx=8, pady=6)
-        self.freq_var = tk.StringVar(
-            value=str(self.state.cfg.data.get("frecuencia_min",
-                self.state.cfg.data.get("frecuencia", "10")))
-        )
+        freq_default = str(self.state.cfg.data.get("frecuencia_min", self.state.cfg.data.get("frecuencia", "10")))
+        self.freq_var = tk.StringVar(value=freq_default)
         tk.Entry(self.tab_tl, textvariable=self.freq_var, width=10
                 ).grid(row=row, column=1, sticky="w", padx=6, pady=6)
         row+=1
 
+        # Hora inicio
         tk.Label(self.tab_tl, text="Hora inicio (HH:MM):", bg=BG_COLOR, fg=FG_COLOR
                 ).grid(row=row, column=0, sticky="e", padx=8, pady=6)
         self.hstart_var = tk.StringVar(value=self.state.cfg.data.get("hora_inicio","08:00"))
@@ -370,6 +456,7 @@ class ConfigWindow:
                 ).grid(row=row, column=1, sticky="w", padx=6, pady=6)
         row+=1
 
+        # Hora fin
         tk.Label(self.tab_tl, text="Hora fin (HH:MM):", bg=BG_COLOR, fg=FG_COLOR
                 ).grid(row=row, column=0, sticky="e", padx=8, pady=6)
         self.hend_var = tk.StringVar(value=self.state.cfg.data.get("hora_fin","18:00"))
@@ -377,18 +464,22 @@ class ConfigWindow:
                 ).grid(row=row, column=1, sticky="w", padx=6, pady=6)
         row+=1
 
+        # Días
         tk.Label(self.tab_tl, text="Días activos:", bg=BG_COLOR, fg=FG_COLOR
                 ).grid(row=row, column=0, sticky="e", padx=8, pady=6)
         days_frame = tk.Frame(self.tab_tl, bg=BG_COLOR)
         days_frame.grid(row=row, column=1, sticky="w", padx=6, pady=6)
+        row+=1
         self.day_vars = []
-        dias_cfg = self.state.cfg.data.get("dias", [True]*7)
-        for i, name in enumerate(DIAS_LISTA):
-            var = tk.BooleanVar(value=bool(dias_cfg[i] if i < len(dias_cfg) else True))
+        stored_days = self.state.cfg.data.get("dias_activos")
+        for i, dia in enumerate(DIAS_LISTA):
+            var = tk.BooleanVar()
+            if isinstance(stored_days, (list, tuple)) and len(stored_days) == len(DIAS_LISTA):
+                var.set(bool(stored_days[i]))
+            else:
+                var.set(True)
             self.day_vars.append(var)
-            tk.Checkbutton(days_frame, text=name.title(), variable=var,
-                           bg=BG_COLOR, fg=FG_COLOR, selectcolor=BG_COLOR,
-                           activebackground=BG_COLOR, activeforeground=FG_COLOR
+            tk.Checkbutton(days_frame, text=dia, variable=var, bg=BG_COLOR, fg=FG_COLOR, selectcolor=BG_COLOR
                           ).grid(row=i//4, column=i%4, padx=4, pady=2, sticky="w")
 
     # ---------- Maniobra ----------
